@@ -1,4 +1,4 @@
-# WAKE辞典 集計レイヤー v1.2
+# WAKE辞典 集計レイヤー v1.2.1
 
 ## 状態
 
@@ -255,3 +255,14 @@ baseは元々 `WHERE has_winner` のため両方を正しく除外していた�
 `has_winner is not true` に修正し、false/null内訳も保持するようにした。
 
 集計対象そのものは変わらず、メタデータ表示だけの修正。
+
+## v1.2.1修正
+
+PostgreSQLの `CREATE OR REPLACE VIEW` は既存VIEWの途中に新しい列を差し込めないため、
+v1.2では `excluded_flag_races` の位置がずれて 42P16 が発生した。
+
+v1.2.1では既存列の順序・名前を完全維持し、
+`winner_status_unknown_races` と `winner_status_false_races` をVIEW末尾に追加する形へ修正。
+
+既存VIEWを削除したり変更したりする破壊操作は不要。
+`sql/01_wake_dictionary_views.sql` をそのまま再実行すればよい。

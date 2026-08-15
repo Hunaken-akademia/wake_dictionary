@@ -155,6 +155,8 @@ where j.has_winner
 
 -- ----------------------------------------------------------------------------
 -- 2. メタデータ / 品質情報
+-- v1.2.1: 既存VIEWの列順互換性を維持するため、
+--          新規診断列はSELECT末尾に追加する。
 -- ----------------------------------------------------------------------------
 create or replace view public.wake_dictionary_metadata_v1 as
 with params as (
@@ -253,12 +255,12 @@ select
   sc.staging_matched_rows,
   round(100.0 * sc.staging_matched_rows / nullif(sc.rr_rows,0), 3) as staging_coverage_pct,
   er.no_winner_races,
-  er.winner_status_unknown_races,
-  er.winner_status_false_races,
   er.excluded_flag_races,
   ref.refund_related_races,
   false as grade_available,
-  false as branch_available
+  false as branch_available,
+  er.winner_status_unknown_races,
+  er.winner_status_false_races
 from params p
 cross join raw_period rp
 cross join usable u

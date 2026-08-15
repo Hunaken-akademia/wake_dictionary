@@ -52,3 +52,6 @@ missing-races checkの178レースは全件説明可能:
 - winner_status_unknown(NULL) = 9
 - regno/course異常による全落ちは0
 集計baseは両方を既に除外していたため、統計値のロジック変更はなし。
+
+## v1.2.1
+42P16対策。既存metadata VIEWの列順を維持し、新規診断列を末尾追加へ変更。

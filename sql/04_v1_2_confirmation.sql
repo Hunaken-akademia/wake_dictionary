@@ -17,8 +17,8 @@ select
   usable_races,
   racers,
   no_winner_races,
+  excluded_flag_races,
   winner_status_false_races,
   winner_status_unknown_races,
-  excluded_flag_races,
   staging_coverage_pct
 from public.wake_dictionary_metadata_v1;
