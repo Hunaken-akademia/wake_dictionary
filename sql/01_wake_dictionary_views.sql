@@ -26,7 +26,7 @@
 --   そのためこのv1では grade / branch をNULLとして出力する。
 --
 -- 集計期間:
---   current_date を基準に直近24ヶ月。
+--   JST日付 `(now() at time zone 'Asia/Tokyo')::date` を基準に直近24ヶ月。
 --   DBに24ヶ月未満しか無い場合は、存在する最古日以降だけが実データ期間になる。
 -- ============================================================================
 
@@ -56,8 +56,8 @@
 create or replace view public.wake_dictionary_base_24m_v1 as
 with params as (
   select
-    current_date as generated_on,
-    (current_date - interval '24 months')::date as requested_start
+    (now() at time zone 'Asia/Tokyo')::date as generated_on,
+    ((now() at time zone 'Asia/Tokyo')::date - interval '24 months')::date as requested_start
 ),
 race_validity as (
   select
@@ -159,8 +159,8 @@ where j.has_winner
 create or replace view public.wake_dictionary_metadata_v1 as
 with params as (
   select
-    current_date as generated_on,
-    (current_date - interval '24 months')::date as requested_start
+    (now() at time zone 'Asia/Tokyo')::date as generated_on,
+    ((now() at time zone 'Asia/Tokyo')::date - interval '24 months')::date as requested_start
 ),
 raw_period as (
   select

@@ -1,4 +1,4 @@
-# WAKE辞典 集計レイヤー v1
+# WAKE辞典 集計レイヤー v1.1
 
 ## 状態
 
@@ -237,3 +237,8 @@ node scripts/validate_wake_dictionary.mjs
 3. 全国決まり手分布がcourseごとに100%
 4. `win_n < 5` の実測割合を確認
 5. JSON生成が完走し、index.jsonが500KB未満
+
+
+## v1.1修正
+
+SupabaseはUTC基準のため `current_date` だとJST深夜に前日扱いになることを実測で確認。期間基準日を `(now() at time zone 'Asia/Tokyo')::date` に修正。
