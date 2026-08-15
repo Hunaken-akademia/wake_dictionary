@@ -45,3 +45,10 @@ STEP 3の実DB実行結果。
 外部で級別確認済みの3登録番号を指定して検証する。
 
 このため、本パッケージは「実装済み・本番認証前」の状態。
+
+## v1.2監査追記
+missing-races checkの178レースは全件説明可能:
+- winner_status_false = 169
+- winner_status_unknown(NULL) = 9
+- regno/course異常による全落ちは0
+集計baseは両方を既に除外していたため、統計値のロジック変更はなし。

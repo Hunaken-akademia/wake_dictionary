@@ -299,6 +299,8 @@ await writeJson(resolve(OUT_DIR, "metadata.json"), {
     other_st_missing_rows: Number(md.other_st_missing_rows),
     staging_coverage_pct: pct(md.staging_coverage_pct),
     no_winner_races: Number(md.no_winner_races),
+    winner_status_unknown_races: Number(md.winner_status_unknown_races),
+    winner_status_false_races: Number(md.winner_status_false_races),
     excluded_flag_races: Number(md.excluded_flag_races),
     refund_related_races: Number(md.refund_related_races),
     grade_available: Boolean(md.grade_available),

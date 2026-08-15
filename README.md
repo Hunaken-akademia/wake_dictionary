@@ -1,4 +1,4 @@
-# WAKE辞典 集計レイヤー v1.1
+# WAKE辞典 集計レイヤー v1.2
 
 ## 状態
 
@@ -242,3 +242,16 @@ node scripts/validate_wake_dictionary.mjs
 ## v1.1修正
 
 SupabaseはUTC基準のため `current_date` だとJST深夜に前日扱いになることを実測で確認。期間基準日を `(now() at time zone 'Asia/Tokyo')::date` に修正。
+
+## v1.2修正
+
+JST修正後の欠落レース監査で、raw 58,862レースに対しbase 58,684レースで178レース除外を確認。
+内訳は:
+- `has_winner=false`: 169レース
+- `has_winner=null`: 9レース
+
+baseは元々 `WHERE has_winner` のため両方を正しく除外していた。
+一方、metadataの `count(*) filter (where not has_winner)` はNULLを数えず169と過少表示していたため、
+`has_winner is not true` に修正し、false/null内訳も保持するようにした。
+
+集計対象そのものは変わらず、メタデータ表示だけの修正。

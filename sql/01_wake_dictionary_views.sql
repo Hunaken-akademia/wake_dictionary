@@ -201,7 +201,9 @@ staging_coverage as (
 ),
 excluded_races as (
   select
-    count(*) filter (where not x.has_winner) as no_winner_races,
+    count(*) filter (where x.has_winner is not true) as no_winner_races,
+    count(*) filter (where x.has_winner is null) as winner_status_unknown_races,
+    count(*) filter (where x.has_winner is false) as winner_status_false_races,
     count(*) filter (where x.excluded_flag) as excluded_flag_races
   from (
     select
@@ -251,6 +253,8 @@ select
   sc.staging_matched_rows,
   round(100.0 * sc.staging_matched_rows / nullif(sc.rr_rows,0), 3) as staging_coverage_pct,
   er.no_winner_races,
+  er.winner_status_unknown_races,
+  er.winner_status_false_races,
   er.excluded_flag_races,
   ref.refund_related_races,
   false as grade_available,
