@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * WAKE辞典 v2.1 validation
+ * WAKE辞典 v2.1.1 validation
  *
  * Global checks:
  *  - racer course n sum == racer total starts
@@ -172,28 +172,85 @@ if (verify.some(([,v]) => !v)) {
       if (r.is_l) x.l++;
     }
 
+    // v2.1 exporterのJSONは表示用に率/STを小数3桁へ丸めている。
+    // v2.0までのvalidatorはDB VIEW（未丸め）を直接比較していたため1e-8でよかったが、
+    // v2.1からgenerated JSONを検証対象にしたことで、未丸めのmanual値と比較すると
+    // 正しいデータでも必ずFAILし得る。件数は完全一致、率/STはJSONと同じround3後で比較する。
+    const round3 = (v) => v == null ? null : Math.round(Number(v) * 1000) / 1000;
+
     let ok = true;
+    const mismatch = [];
+
+    const aggCourses = new Set(agg.map((x) => Number(x.course)));
+    const manualCourses = new Set(manual.keys());
+    if (
+      aggCourses.size !== manualCourses.size ||
+      [...manualCourses].some((c) => !aggCourses.has(c))
+    ) {
+      ok = false;
+      mismatch.push(`course_set generated=${[...aggCourses].sort().join(",")} manual=${[...manualCourses].sort().join(",")}`);
+    }
+
     for (const a of agg) {
       const c = Number(a.course);
       const m = manual.get(c);
-      if (!m) { ok=false; continue; }
+      if (!m) {
+        ok = false;
+        mismatch.push(`course${c}: missing manual row`);
+        continue;
+      }
+
       const avgst = m.st.length ? m.st.reduce((x,y)=>x+y,0)/m.st.length : null;
-      const checks = [
-        Number(a.n)===m.n,
-        Number(a.win_n)===m.w,
-        Number(a.ren2_n)===m.r2,
-        Number(a.ren3_n)===m.r3,
-        Number(a.f_count)===m.f,
-        Number(a.l_count)===m.l,
-        approx(a.raw_win_rate, rate(m.w,m.n), 1e-8),
-        approx(a.raw_ren2_rate, rate(m.r2,m.n), 1e-8),
-        approx(a.raw_ren3_rate, rate(m.r3,m.n), 1e-8),
-        (a.avg_st==null && avgst==null) || approx(a.avg_st,avgst,1e-8),
-      ];
-      if (checks.some(v=>!v)) ok=false;
+      const expected = {
+        n: m.n,
+        win_n: m.w,
+        ren2_n: m.r2,
+        ren3_n: m.r3,
+        f_count: m.f,
+        l_count: m.l,
+        raw_win_rate: round3(rate(m.w,m.n)),
+        raw_ren2_rate: round3(rate(m.r2,m.n)),
+        raw_ren3_rate: round3(rate(m.r3,m.n)),
+        avg_st: round3(avgst),
+      };
+
+      const actual = {
+        n: Number(a.n),
+        win_n: Number(a.win_n),
+        ren2_n: Number(a.ren2_n),
+        ren3_n: Number(a.ren3_n),
+        f_count: Number(a.f_count),
+        l_count: Number(a.l_count),
+        raw_win_rate: a.raw_win_rate == null ? null : Number(a.raw_win_rate),
+        raw_ren2_rate: a.raw_ren2_rate == null ? null : Number(a.raw_ren2_rate),
+        raw_ren3_rate: a.raw_ren3_rate == null ? null : Number(a.raw_ren3_rate),
+        avg_st: a.avg_st == null ? null : Number(a.avg_st),
+      };
+
+      const exactKeys = ["n","win_n","ren2_n","ren3_n","f_count","l_count"];
+      for (const key of exactKeys) {
+        if (actual[key] !== expected[key]) {
+          ok = false;
+          mismatch.push(`course${c}.${key} actual=${actual[key]} expected=${expected[key]}`);
+        }
+      }
+
+      for (const key of ["raw_win_rate","raw_ren2_rate","raw_ren3_rate","avg_st"]) {
+        const av = actual[key], ev = expected[key];
+        const sameNull = av == null && ev == null;
+        const sameValue = av != null && ev != null && approx(av, ev, 1e-12);
+        if (!sameNull && !sameValue) {
+          ok = false;
+          mismatch.push(`course${c}.${key} actual=${av} expected=${ev}`);
+        }
+      }
     }
+
     console.log(`[4] ${klass} regno=${regno} independent row recomputation: ${ok?"PASS":"FAIL"}`);
-    if (!ok) failed=true;
+    if (!ok) {
+      console.log(`    mismatch sample: ${mismatch.slice(0,8).join(" | ")}`);
+      failed=true;
+    }
   }
 }
 
