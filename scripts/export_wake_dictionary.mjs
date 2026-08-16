@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * WAKE辞典 JSON exporter v2.0
+ * WAKE辞典 JSON exporter v2.0.1
  *
  * v1.5.4:
  *   - metadata / racers / profiles の初期取得も完全逐次化
@@ -35,6 +35,7 @@ const PAGE_SIZE = 1000;
 const RACER_BATCH_SIZE = Math.max(5, Number(process.env.WAKE_RACER_BATCH_SIZE || 50));
 const VENUE_BATCH_SIZE = Math.max(5, Number(process.env.WAKE_VENUE_BATCH_SIZE || 50));
 const KIMARITE_BATCH_SIZE = Math.max(2, Number(process.env.WAKE_KIMARITE_BATCH_SIZE || 10));
+const DEFENSE_BATCH_SIZE = Math.max(1, Number(process.env.WAKE_DEFENSE_BATCH_SIZE || 10));
 
 if (!SUPABASE_URL || !SERVICE_KEY) {
   throw new Error("SUPABASE_URL / SUPABASE_SERVICE_KEY are required");
@@ -361,10 +362,15 @@ const kimariteRows = await fetchByRacerBatches(
 );
 
 console.log("fetch defense stats (last 1 year)...");
-const defenseRows = await fetchAllWithTimeoutRetry(
+console.log(`defense_batch_size=${DEFENSE_BATCH_SIZE}`);
+const defenseRows = await fetchByRacerBatches(
   "wake_dictionary_defense_stats_1y_v1",
-  { order: "regno.asc,defense_type.asc" },
-  { attempts: 4, baseDelayMs: 2000 }
+  racers,
+  {
+    order: "regno.asc,defense_type.asc",
+    select: "regno,defense_type,n,avg_finish,top3_n,top3_rate,baseline_avg_finish,baseline_top3_rate,avg_finish_diff,top3_diff_pt,sufficient,period_start,period_end",
+    batchSize: DEFENSE_BATCH_SIZE,
+  }
 );
 
 console.log(`heavy_view_fetch_seconds=${((Date.now()-exportStartedAt)/1000).toFixed(1)}`);

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * WAKE辞典 v2.0 validation
+ * WAKE辞典 v2.0.1 validation
  *
  * Global checks:
  *  - racer course n sum == racer total starts
@@ -279,28 +279,10 @@ try {
 }
 
 
-// 7) v2.0 defense + insight checks
+// 7) v2.0.1 defense + insight checks
+// defense VIEWを再度全件SELECTすると同じstatement timeoutを再発させるため、
+// 実際にデプロイされる generated feature JSON を検証する。
 try {
-  const defense = await fetchAll("wake_dictionary_defense_stats_1y_v1", {
-    select:"regno,defense_type,n,avg_finish,top3_rate,baseline_avg_finish,baseline_top3_rate,sufficient",
-    order:"regno.asc,defense_type.asc"
-  });
-
-  const defenseTypeOk = defense.every((r) =>
-    r.defense_type === "まくられ" || r.defense_type === "差され"
-  );
-  const defenseRangeOk = defense.every((r) =>
-    Number(r.n) >= 1 &&
-    Number(r.avg_finish) >= 2 &&
-    Number(r.avg_finish) <= 6 &&
-    Number(r.top3_rate) >= 0 &&
-    Number(r.top3_rate) <= 100 &&
-    Boolean(r.sufficient) === (Number(r.n) >= 8)
-  );
-  console.log(`[7] defense types ${defenseTypeOk?"PASS":"FAIL"} rows=${defense.length}`);
-  console.log(`[7] defense ranges/minimum-events ${defenseRangeOk?"PASS":"FAIL"}`);
-  if (!defenseTypeOk || !defenseRangeOk) failed = true;
-
   const fs = await import("node:fs/promises");
   const featureFiles = (await fs.readdir(resolve(OUT_DIR, "features")))
     .filter((f) => f.endsWith(".json"));
@@ -309,12 +291,14 @@ try {
   let badInsightCount = 0;
   let badInsightThreshold = 0;
   let badDefensePayload = 0;
+  let defenseItems = 0;
+  let defenseRangeBad = 0;
 
   for (const file of featureFiles) {
     const d = await readJson(`features/${file}`);
     const items = d?.insights?.items || [];
-    if (items.length > 3) badInsightCount++;
 
+    if (items.length > 3) badInsightCount++;
     for (const x of items) {
       if (!(Number(x.strength_ratio) >= 1)) badInsightThreshold++;
     }
@@ -322,20 +306,45 @@ try {
     for (const k of ["makurare","sasare"]) {
       const x = d?.defense_1y?.[k];
       if (!x) continue;
-      if (Boolean(x.sufficient) !== (Number(x.n) >= 8)) badDefensePayload++;
+      defenseItems++;
+
+      if (Boolean(x.sufficient) !== (Number(x.n) >= 8)) {
+        badDefensePayload++;
+      }
+
+      const rangeOk =
+        Number(x.n) >= 1 &&
+        Number(x.avg_finish) >= 2 &&
+        Number(x.avg_finish) <= 6 &&
+        Number(x.top3_rate) >= 0 &&
+        Number(x.top3_rate) <= 100 &&
+        Number(x.baseline_avg_finish) >= 2 &&
+        Number(x.baseline_avg_finish) <= 6 &&
+        Number(x.baseline_top3_rate) >= 0 &&
+        Number(x.baseline_top3_rate) <= 100;
+
+      if (!rangeOk) defenseRangeBad++;
     }
   }
 
   console.log(`[7] feature files=${featureFiles.length}/${racers.length} ${featureCountOk?"PASS":"FAIL"}`);
   console.log(`[7] insights max3 ${badInsightCount===0?"PASS":"FAIL"} bad=${badInsightCount}`);
   console.log(`[7] insight thresholds ${badInsightThreshold===0?"PASS":"FAIL"} bad=${badInsightThreshold}`);
+  console.log(`[7] defense generated items=${defenseItems}`);
+  console.log(`[7] defense ranges ${defenseRangeBad===0?"PASS":"FAIL"} bad=${defenseRangeBad}`);
   console.log(`[7] defense payload sufficient>=8 ${badDefensePayload===0?"PASS":"FAIL"} bad=${badDefensePayload}`);
 
-  if (!featureCountOk || badInsightCount || badInsightThreshold || badDefensePayload) {
+  if (
+    !featureCountOk ||
+    badInsightCount ||
+    badInsightThreshold ||
+    badDefensePayload ||
+    defenseRangeBad
+  ) {
     failed = true;
   }
 } catch (e) {
-  console.log(`[7] v2.0 feature validation FAIL: ${e.message || e}`);
+  console.log(`[7] v2.0.1 feature validation FAIL: ${e.message || e}`);
   failed = true;
 }
 
