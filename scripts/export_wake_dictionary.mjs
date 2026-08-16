@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 /**
- * WAKE辞典 JSON exporter v1.2.3
+ * WAKE辞典 JSON exporter v1.2.4
  *
- * v1.2.3:
- *   集計VIEWを全選手一括で読むと PostgREST の statement timeout に達するため、
- *   regno を25人ずつに分割して取得する。
+ * v1.2.4:
+ *   - 重い集計VIEWを同時実行せず、順番に取得
+ *   - 決まり手VIEWは5選手ずつ
+ *   - 57014 statement timeout時は、そのバッチだけ自動で半分に再分割
+ *   - 1選手まで分割してもtimeoutする場合だけエラー終了
  *   DBスキーマ・集計ロジックは変更しない。
  *
  * Required env:
@@ -67,21 +69,69 @@ function chunk(array, size) {
   return out;
 }
 
-async function fetchByRacerBatches(resource, racers, { order = "regno.asc", select = "*" } = {}) {
-  const regnos = racers.map((r) => Number(r.regno)).filter(Number.isFinite);
-  const batches = chunk(regnos, RACER_BATCH_SIZE);
-  const all = [];
+function isStatementTimeout(error) {
+  const s = String(error?.message || error || "");
+  return s.includes('"code":"57014"') || s.includes("statement timeout");
+}
 
-  for (let i = 0; i < batches.length; i++) {
-    const ids = batches[i];
-    const filter = `in.(${ids.join(",")})`;
-    const rows = await fetchAll(resource, {
+async function fetchRacerChunkAdaptive(
+  resource,
+  ids,
+  { order = "regno.asc", select = "*", depth = 0 } = {}
+) {
+  const filter = `in.(${ids.join(",")})`;
+
+  try {
+    return await fetchAll(resource, {
       select,
       order,
       filters: [["regno", filter]],
     });
+  } catch (error) {
+    if (!isStatementTimeout(error) || ids.length <= 1) throw error;
+
+    const mid = Math.ceil(ids.length / 2);
+    const left = ids.slice(0, mid);
+    const right = ids.slice(mid);
+
+    console.warn(
+      `${resource}: statement timeout for ${ids.length} racers; split -> ${left.length}+${right.length}`
+    );
+
+    // Sequential on purpose: avoid making Supabase compute multiple heavy views at once.
+    const a = await fetchRacerChunkAdaptive(resource, left, {
+      order,
+      select,
+      depth: depth + 1,
+    });
+    const b = await fetchRacerChunkAdaptive(resource, right, {
+      order,
+      select,
+      depth: depth + 1,
+    });
+    return [...a, ...b];
+  }
+}
+
+async function fetchByRacerBatches(
+  resource,
+  racers,
+  { order = "regno.asc", select = "*", batchSize = RACER_BATCH_SIZE } = {}
+) {
+  const regnos = racers.map((r) => Number(r.regno)).filter(Number.isFinite);
+  const batches = chunk(regnos, batchSize);
+  const all = [];
+
+  for (let i = 0; i < batches.length; i++) {
+    const ids = batches[i];
+    const rows = await fetchRacerChunkAdaptive(resource, ids, {
+      select,
+      order,
+    });
     all.push(...rows);
-    console.log(`${resource}: batch ${i + 1}/${batches.length} rows=${rows.length}`);
+    console.log(
+      `${resource}: batch ${i + 1}/${batches.length} racers=${ids.length} rows=${rows.length}`
+    );
   }
 
   return all;
@@ -133,18 +183,40 @@ if (metadataRows.length !== 1) {
 
 console.log(`racers=${racers.length}`);
 
-// 重い集計VIEWは全選手一括で読まず、regno 25人単位で取得する。
-const [courseStats, venueStats, kimariteRows] = await Promise.all([
-  fetchByRacerBatches("wake_dictionary_course_stats_v1", racers, {
+// 重い集計VIEWは同時実行しない。
+// Supabaseのstatement timeoutを避けるため、順番に取得する。
+// さらに各バッチで57014が出た場合は、そのバッチだけ自動で半分ずつ再分割する。
+console.log("fetch course stats...");
+const courseStats = await fetchByRacerBatches(
+  "wake_dictionary_course_stats_v1",
+  racers,
+  {
     order: "regno.asc,course.asc",
-  }),
-  fetchByRacerBatches("wake_dictionary_venue_stats_v1", racers, {
+    batchSize: 25,
+  }
+);
+
+console.log("fetch venue stats...");
+const venueStats = await fetchByRacerBatches(
+  "wake_dictionary_venue_stats_v1",
+  racers,
+  {
     order: "regno.asc,place_no.asc",
-  }),
-  fetchByRacerBatches("wake_dictionary_win_kimarite_v1", racers, {
+    batchSize: 25,
+  }
+);
+
+console.log("fetch kimarite stats...");
+const kimariteRows = await fetchByRacerBatches(
+  "wake_dictionary_win_kimarite_v1",
+  racers,
+  {
     order: "regno.asc,course.asc,kimarite.asc",
-  }),
-]);
+    // このVIEWが最も重いため初期値を小さくする。
+    // それでもtimeoutしたバッチは5→3+2→...のように自動分割される。
+    batchSize: 5,
+  }
+);
 
 const md = metadataRows[0];
 const generatedAt = new Date().toISOString();
