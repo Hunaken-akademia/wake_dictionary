@@ -91,15 +91,31 @@ console.log(`[3] racer-course cells win_n<5: ${thinCells.length}/${cells.length}
 console.log(`[3] racers total wins<5: ${thinRacers.length}/${perRacerWins.size} = ${(100*thinRacers.length/Math.max(perRacerWins.size,1)).toFixed(2)}%`);
 
 // 4) A1/A2/B1 cross-check
+// Explicit env values still override auto-selection.
+// Otherwise choose the highest-start racer carrying each verified grade.
+const profileRows = await fetchAll("wake_dictionary_racer_profile_v1", {
+  select:"regno,grade,branch,captured_at",
+  order:"regno.asc"
+});
+const totalsByRegno = new Map(racers.map((r) => [Number(r.regno), Number(r.total_starts)]));
+
+function autoPickGrade(grade) {
+  const candidates = profileRows
+    .filter((r) => r.grade === grade && totalsByRegno.has(Number(r.regno)))
+    .map((r) => ({ regno:Number(r.regno), starts:totalsByRegno.get(Number(r.regno)) || 0 }))
+    .sort((a,b) => b.starts - a.starts || a.regno - b.regno);
+  return candidates[0]?.regno ? String(candidates[0].regno) : "";
+}
+
 const verify = [
-  ["A1", process.env.VERIFY_A1_REGNO],
-  ["A2", process.env.VERIFY_A2_REGNO],
-  ["B1", process.env.VERIFY_B1_REGNO],
+  ["A1", process.env.VERIFY_A1_REGNO || autoPickGrade("A1")],
+  ["A2", process.env.VERIFY_A2_REGNO || autoPickGrade("A2")],
+  ["B1", process.env.VERIFY_B1_REGNO || autoPickGrade("B1")],
 ];
 
 if (verify.some(([,v]) => !v)) {
   console.log("[4] A1/A2/B1 cross-check: NOT RUN");
-  console.log("    audited schema has no grade field; set VERIFY_A1_REGNO / VERIFY_A2_REGNO / VERIFY_B1_REGNO using externally verified current classes.");
+  console.log("    racer profile table does not yet contain all three grades. Run collect_racer_profiles.mjs first.");
 } else {
   for (const [klass,reg] of verify) {
     const regno = Number(reg);

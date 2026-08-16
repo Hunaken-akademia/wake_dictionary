@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * WAKE辞典 JSON exporter v1.2.4
+ * WAKE辞典 JSON exporter v1.3
  *
  * v1.2.4:
  *   - 重い集計VIEWを同時実行せず、順番に取得
@@ -172,9 +172,10 @@ console.log(`out=${OUT_DIR}`);
 console.log(`racer_batch_size=${RACER_BATCH_SIZE}`);
 
 // 軽いVIEWを先に取得し、regno一覧を確定する。
-const [metadataRows, racers] = await Promise.all([
+const [metadataRows, racers, racerProfiles] = await Promise.all([
   fetchAll("wake_dictionary_metadata_v1"),
   fetchAll("wake_dictionary_racers_v1", { order: "regno.asc" }),
+  fetchAll("wake_dictionary_racer_profile_v1", { order: "regno.asc" }),
 ]);
 
 if (metadataRows.length !== 1) {
@@ -227,6 +228,7 @@ await mkdir(resolve(OUT_DIR, "racers"), { recursive: true });
 const byCourse = groupBy(courseStats, "regno");
 const byVenue = groupBy(venueStats, "regno");
 const byKimarite = groupBy(kimariteRows, "regno");
+const profileByRegno = new Map(racerProfiles.map((r) => [String(r.regno), r]));
 
 const period = {
   requested_start: md.requested_start,
@@ -241,11 +243,15 @@ for (const racer of racers) {
   const key = String(regno);
   const name = racer.racer_name || "";
 
+  const profile = profileByRegno.get(key) || null;
+  const grade = profile?.grade || null;
+  const branch = profile?.branch || null;
+
   index.push({
     regno,
     name,
-    grade: racer.grade ?? null,
-    branch: racer.branch ?? null,
+    grade,
+    branch,
   });
 
   const courses = (byCourse.get(key) || []).map((r) => ({
@@ -375,8 +381,8 @@ for (const racer of racers) {
     racer: {
       regno,
       name,
-      grade: racer.grade ?? null,
-      branch: racer.branch ?? null,
+      grade,
+      branch,
     },
     totals: {
       n: Number(racer.total_starts),
@@ -387,7 +393,7 @@ for (const racer of racers) {
     win_kimarite_breakdown: [...kimByCourse.values()].sort((a, b) => a.course - b.course),
     venue_stats: venue,
     notes: {
-      grade_branch_source: "unavailable_in_audited_schema",
+      grade_branch_source: "wake_dictionary_racer_profile_v1 / BOATCAST_STR3",
       kimarite_meaning: "breakdown_of_how_the_racer_won; not an attacking-style rate",
       kimarite_display_rule: "when sufficient=false (win_n<5), UI must hide rates and show counts only",
       refund_races: "valid completed races are retained; F/L ST is excluded from avg ST",
@@ -417,8 +423,14 @@ await writeJson(resolve(OUT_DIR, "metadata.json"), {
     winner_status_false_races: Number(md.winner_status_false_races),
     excluded_flag_races: Number(md.excluded_flag_races),
     refund_related_races: Number(md.refund_related_races),
-    grade_available: Boolean(md.grade_available),
-    branch_available: Boolean(md.branch_available),
+    grade_available: racerProfiles.some((r) => /^(A1|A2|B1|B2)$/.test(String(r.grade || ""))),
+    branch_available: racerProfiles.some((r) => String(r.branch || "").trim()),
+    grade_profile_count: racerProfiles.filter((r) => /^(A1|A2|B1|B2)$/.test(String(r.grade || ""))).length,
+    branch_profile_count: racerProfiles.filter((r) => String(r.branch || "").trim()).length,
+    grade_profile_coverage_pct: pct(
+      100 * racerProfiles.filter((r) => /^(A1|A2|B1|B2)$/.test(String(r.grade || ""))).length
+      / Math.max(racers.length, 1)
+    ),
   },
 });
 
