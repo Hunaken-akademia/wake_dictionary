@@ -23,7 +23,7 @@ const KIMARITE = [
 
 const RANKING_DESCRIPTIONS = {
   "ranking_b_attackers.json":
-    "B1・B2の中から、3〜6コースの1着率がその級別の基準を上回る選手を抽出。外・中コースから穴を開ける候補を探すランキングです。",
+    "B1・B2の中から、3〜6コースの1着率がその級別の基準を上回る選手を抽出。人気薄でも外・中コースから舟券に絡む可能性がある『伏兵』を探すランキングです。",
   "ranking_makuri_B1.json":
     "B1選手のうち、「まくり」で1着になる率が高い選手を比較します。",
   "ranking_sashi_B1.json":
@@ -47,7 +47,7 @@ const GUIDE_ITEMS = [
   ["母数（n）", "その率や平均を計算するのに使った対象レース数。一般に母数が大きいほど、一時的な偶然の影響を受けにくくなります。"],
   ["最低走数", "母数が少なすぎる選手を一覧から除外するための条件です。既定は30走以上です。"],
   ["逆引き検索", "選手名から探すのではなく、「4コース×まくり×B1」のような条件から該当選手を探す機能です。"],
-  ["B級の刺客", "B1・B2の中で、3〜6コースの1着率がその級別の基準を上回る選手を探すランキング。外・中コースから穴を開ける候補を見つける目的です。"],
+  ["B級の伏兵", "B1・B2の中で、3〜6コースの1着率がその級別の基準を上回る選手を探すランキング。人気薄でも外・中コースから舟券に絡む可能性がある選手を見つける目的です。"],
   ["まくり職人", "指定級別の中で、まくりで1着になる率が高い選手を比較します。"],
   ["差し名人", "指定級別の中で、差しで1着になる率が高い選手を比較します。"],
   ["イン最強", "1コースから逃げで1着になる率が高い選手を比較します。"],
@@ -56,6 +56,9 @@ const GUIDE_ITEMS = [
   ["スタート巧者", "平均STが速い選手を比較します。STは小さいほど速い数値です。"],
   ["Fなし", "集計期間内のF回数が0の選手だけに絞ったランキングです。"],
   ["決まり手", "1着になったレースの勝ち方。逃げ・差し・まくり・まくり差し・抜き・恵まれの6種類を扱います。"],
+  ["意外な一面", "選手の成績から、母数を考慮した補正後でも目立つ偏りを最大3件まで自動抽出します。低母数の偶然を特徴として出さないため、この判定だけは補正OFF時でも補正値を使用します。"],
+  ["まくられ耐性", "自分より外の選手が「まくり」で1着になった時に、自分が何着まで残したかを見る直近1年の実測データです。"],
+  ["差され耐性", "自分より外の選手が「差し」で1着になった時に、自分が何着まで残したかを見る直近1年の実測データです。8件未満はデータ不足扱いにします。"],
   ["本日出走のみ", "本日レースに出走予定の選手だけに絞る機能です。選手検索・逆引き検索・ランキングで利用できます。出走予定は毎日の自動更新時にBOATCASTの当日出走表から取得します。"],
 ];
 
@@ -359,8 +362,8 @@ function featureCards() {
       </article>
       <article class="card">
         <div class="icon">↗</div>
-        <h3>B級の刺客などのランキング</h3>
-        <p>B級の刺客、まくり職人、イン不安定、ダッシュ巧者などを事前集計。名前の意味は用語ガイドで確認できます。</p>
+        <h3>B級の伏兵などのランキング</h3>
+        <p>B級の伏兵、まくり職人、イン不安定、ダッシュ巧者などを事前集計。名前の意味は用語ガイドで確認できます。</p>
         <button data-go="ranking">ランキングを見る →</button>
       </article>
       <article class="card">
@@ -610,7 +613,7 @@ function rankingDefaultMinN(file) {
 }
 
 const rankingDefs = [
-  ["ranking_b_attackers.json","B級の刺客"],
+  ["ranking_b_attackers.json","B級の伏兵"],
   ["ranking_makuri_B1.json","B1 まくり職人"],
   ["ranking_sashi_B1.json","B1 差し名人"],
   ["ranking_in_unstable_A1.json","A1 イン不安定"],
@@ -952,11 +955,115 @@ function venueTable(rows) {
     </div>`;
 }
 
+
+function insightText(x) {
+  if (!x) return "";
+  if (x.type === "course_win") {
+    const dir = x.direction === "strong" ? "高い" : "低い";
+    const sign = Number(x.diff_pt) >= 0 ? "+" : "";
+    return `${x.course}コースの補正1着率が${x.baseline_scope}基準より ${sign}${fmt(x.diff_pt)}pt ${dir}（${x.n}走）`;
+  }
+  if (x.type === "kimarite_bias") {
+    return `${x.course}コース1着の ${fmt(x.adjusted_rate)}% が「${esc(x.kimarite)}」（${x.baseline_scope}基準 ${fmt(x.baseline_rate)}% / 1着${x.win_n}回）`;
+  }
+  if (x.type === "st_fast") {
+    return `${x.course}コースの平均STが本人平均より ${fmt(Math.abs(Number(x.diff)),3)} 秒速い（${x.n}走）`;
+  }
+  if (x.type === "venue_ren3") {
+    const dir = x.direction === "strong" ? "高い" : "低い";
+    const sign = Number(x.diff_pt) >= 0 ? "+" : "";
+    return `${placeNames[x.place_no] || `${x.place_no}場`}の補正3連対率が本人全場基準より ${sign}${fmt(x.diff_pt)}pt ${dir}（${x.n}走）`;
+  }
+  return "";
+}
+
+function insightsPanel(data) {
+  const items = data?.insights?.items || [];
+  if (!items.length) {
+    return `
+      <div class="insight-panel empty-insight">
+        <div class="insight-icon">💡</div>
+        <div><strong>特筆すべき偏りなし</strong><p>現在の母数と補正基準では、強く目立つ特徴は検出されていません。</p></div>
+      </div>`;
+  }
+
+  return `
+    <div class="insight-panel">
+      ${items.map((x) => `
+        <article class="insight-item">
+          <span class="insight-dot"></span>
+          <div>${esc(insightText(x))}</div>
+        </article>`).join("")}
+      <div class="insight-note">※ 低母数の偶然を避けるため、「意外な一面」の判定には常に補正値を使用します。</div>
+    </div>`;
+}
+
+function defenseMetric(label, x) {
+  if (!x) {
+    return `
+      <article class="defense-card">
+        <div class="defense-title">${label}</div>
+        <div class="meta">該当データなし</div>
+      </article>`;
+  }
+
+  if (!x.sufficient) {
+    return `
+      <article class="defense-card">
+        <div class="defense-title">${label}</div>
+        <div class="defense-big">${x.n}回</div>
+        <div class="meta">8件未満のためデータ不足</div>
+      </article>`;
+  }
+
+  const finishDiff = Number(x.avg_finish_diff);
+  const top3Diff = Number(x.top3_diff_pt);
+  const finishText = finishDiff < 0
+    ? `基準より ${fmt(Math.abs(finishDiff),2)}着 良い`
+    : finishDiff > 0
+      ? `基準より ${fmt(finishDiff,2)}着 悪い`
+      : "基準と同じ";
+  const top3Sign = top3Diff >= 0 ? "+" : "";
+
+  return `
+    <article class="defense-card">
+      <div class="defense-title">${label}</div>
+      <div class="defense-big">${x.n}回</div>
+      <dl>
+        <div><dt>平均着順</dt><dd>${fmt(x.avg_finish,2)}着</dd></div>
+        <div><dt>全体基準</dt><dd>${fmt(x.baseline_avg_finish,2)}着</dd></div>
+        <div><dt>比較</dt><dd class="${finishDiff <= 0 ? "pos" : "neg"}">${finishText}</dd></div>
+        <div><dt>3着内率</dt><dd>${fmt(x.top3_rate)}%</dd></div>
+        <div><dt>全体基準</dt><dd>${fmt(x.baseline_top3_rate)}%</dd></div>
+        <div><dt>基準差</dt><dd class="${top3Diff >= 0 ? "pos" : "neg"}">${top3Sign}${fmt(top3Diff)}pt</dd></div>
+      </dl>
+    </article>`;
+}
+
+function defensePanel(data) {
+  const d = data?.defense_1y;
+  if (!d) return `<div class="empty">耐性データなし</div>`;
+
+  return `
+    <div class="defense-grid">
+      ${defenseMetric("まくられ", d.makurare)}
+      ${defenseMetric("差され", d.sasare)}
+    </div>
+    <div class="notice defense-note">
+      「自分より外の艇」が該当決まり手で1着になったレースで、どこまで着を残したかを集計。
+      基準値は、その選手が攻められた時の進入コース構成に合わせた全国平均です。
+      対象期間：${esc(d.period?.start || "—")} 〜 ${esc(d.period?.end || "—")}
+    </div>`;
+}
+
 async function renderRacer(regno) {
   shell(`<section class="section shell"><div class="empty">選手データを読み込み中…</div></section>`);
 
   try {
-    const d = await getJson(`${DATA_ROOT}/racers/${regno}.json`);
+    const [d, featureData] = await Promise.all([
+      getJson(`${DATA_ROOT}/racers/${regno}.json`),
+      getJson(`${DATA_ROOT}/features/${regno}.json`).catch(() => null)
+    ]);
     const r = d.racer || {};
 
     shell(`
@@ -985,6 +1092,24 @@ async function renderRacer(regno) {
         </div>
 
         <div class="section-title" style="margin-top:28px">
+          <div>
+            <div class="kicker">AUTO INSIGHT</div>
+            <h2>この選手の意外な一面</h2>
+          </div>
+          <p>最大3件 / 母数補正済み</p>
+        </div>
+        ${insightsPanel(featureData)}
+
+        <div class="section-title" style="margin-top:32px">
+          <div>
+            <div class="kicker">DEFENSE</div>
+            <h2>攻められた時の粘り</h2>
+          </div>
+          <p>直近1年 / 実測値</p>
+        </div>
+        ${defensePanel(featureData)}
+
+        <div class="section-title" style="margin-top:32px">
           <h2>コース別成績</h2>
           <p>${state.useAdjusted ? "実測値＋補正値" : "実測値のみ"}</p>
         </div>

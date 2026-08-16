@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * WAKE辞典 JSON exporter v1.9
+ * WAKE辞典 JSON exporter v2.0
  *
  * v1.5.4:
  *   - metadata / racers / profiles の初期取得も完全逐次化
@@ -355,9 +355,16 @@ const kimariteRows = await fetchByRacerBatches(
   {
     order: "regno.asc,course.asc,kimarite.asc",
     // このVIEWが最も重いため初期値を小さくする。
-    // それでもtimeoutしたバッチは5→3+2→...のように自動分割される。
+    // timeoutしたバッチは自動分割される。
     batchSize: KIMARITE_BATCH_SIZE,
   }
+);
+
+console.log("fetch defense stats (last 1 year)...");
+const defenseRows = await fetchAllWithTimeoutRetry(
+  "wake_dictionary_defense_stats_1y_v1",
+  { order: "regno.asc,defense_type.asc" },
+  { attempts: 4, baseDelayMs: 2000 }
 );
 
 console.log(`heavy_view_fetch_seconds=${((Date.now()-exportStartedAt)/1000).toFixed(1)}`);
@@ -372,6 +379,7 @@ const byVenue = groupBy(venueStats, "regno");
 const byKimarite = groupBy(kimariteRows, "regno");
 const profileByRegno = new Map(racerProfiles.map((r) => [String(r.regno), r]));
 const kanaByRegno = new Map(racerKanaRows.map((r) => [String(r.regno), r]));
+const byDefense = groupBy(defenseRows, "regno");
 
 const period = {
   requested_start: md.requested_start,
@@ -644,11 +652,15 @@ for (const scope of GRADE_SCOPES) {
       f_count: a.fCount,
       l_count: a.lCount,
       kimarite_win_rate_per_start: {},
+      kimarite_win_composition: {},
     };
     for (const kind of KIMARITE_KINDS) {
       obj.kimarite_win_rate_per_start[kind.name] = pct(
         ratePct(a.kimarite[kind.name], a.starts)
       );
+      obj.kimarite_win_composition[kind.name] = a.wins > 0
+        ? pct(ratePct(a.kimarite[kind.name], a.wins))
+        : null;
     }
     baselineJson.grade_course[scope][String(course)] = obj;
   }
@@ -852,7 +864,7 @@ async function writeRanking(filename, title, rows, sort, extra = {}) {
   rankingCatalog.push({ file: filename, title, rows: rows.length, sort });
 }
 
-// B級の刺客: B1/B2、3〜6コース1着率が本人級別基準より高い順。
+// B級の伏兵: B1/B2、3〜6コース1着率が本人級別基準より高い順。
 {
   const rows = [];
   for (const racer of racers) {
@@ -889,7 +901,7 @@ async function writeRanking(filename, title, rows, sort, extra = {}) {
   );
   await writeRanking(
     "ranking_b_attackers.json",
-    "B級の刺客",
+    "B級の伏兵",
     rows,
     "diffPtAdjusted_desc",
     { grades: ["B1","B2"], courses: [3,4,5,6], metric: "win_rate" }
@@ -1081,6 +1093,246 @@ for (const grade of GRADES) {
   }
 }
 
+
+// ----------------------------------------------------------------------------
+// ★3 「この選手の意外な一面」 + ★4 まくられ耐性 / 差され耐性
+// ----------------------------------------------------------------------------
+
+function courseValidStN(row) {
+  if (!row) return 0;
+  return Math.max(
+    0,
+    Number(row.n || 0)
+      - Number(row.f_count || 0)
+      - Number(row.l_count || 0)
+      - Number(row.st_missing_count || 0)
+  );
+}
+
+function strongestPerType(candidates) {
+  const best = new Map();
+  for (const c of candidates) {
+    const old = best.get(c.type);
+    if (!old || Number(c.strength_ratio) > Number(old.strength_ratio)) {
+      best.set(c.type, c);
+    }
+  }
+  return [...best.values()]
+    .sort((a,b) =>
+      Number(b.strength_ratio) - Number(a.strength_ratio) ||
+      String(a.type).localeCompare(String(b.type))
+    )
+    .slice(0, 3);
+}
+
+function buildInsightsForRacer(regno) {
+  const grade = gradeOf(regno);
+  const scope = GRADES.includes(grade) ? grade : "ALL";
+  const candidates = [];
+
+  // (1) コース別1着率: 級別×コース基準との差 ±8pt、n>=30
+  for (let course = 1; course <= 6; course++) {
+    const row = courseRowMap.get(`${regno}|${course}`);
+    if (!row || Number(row.n || 0) < 30) continue;
+
+    const baselineRate =
+      baselineJson.grade_course?.[scope]?.[String(course)]?.win_rate;
+    if (baselineRate == null) continue;
+
+    const adjustedRate = shrinkRatePct(
+      Number(row.win_n || 0),
+      Number(row.n || 0),
+      Number(baselineRate),
+      SHRINK_K
+    );
+    const diff = adjustedRate - Number(baselineRate);
+
+    if (Math.abs(diff) >= 8) {
+      candidates.push({
+        type: "course_win",
+        direction: diff > 0 ? "strong" : "weak",
+        course,
+        n: Number(row.n),
+        adjusted_rate: pct(adjustedRate),
+        baseline_rate: pct(baselineRate),
+        diff_pt: pct(diff),
+        baseline_scope: scope,
+        strength_ratio: pct(Math.abs(diff) / 8),
+      });
+    }
+  }
+
+  // (2) 決まり手偏重: 級別×コース基準より +20pt、勝利数>=20
+  for (let course = 1; course <= 6; course++) {
+    const row = courseRowMap.get(`${regno}|${course}`);
+    if (!row) continue;
+    const winN = Number(row.win_n || 0);
+    if (winN < 20) continue;
+
+    for (const kind of KIMARITE_KINDS) {
+      const baselineComp =
+        baselineJson.grade_course?.[scope]?.[String(course)]
+          ?.kimarite_win_composition?.[kind.name];
+      if (baselineComp == null) continue;
+
+      const kimRow = (kimRowsByCell.get(`${regno}|${course}`) || [])
+        .find((x) => x.kimarite === kind.name);
+      const count = Number(kimRow?.kimarite_n || 0);
+
+      const adjustedComp = 100 * (
+        count + KIMARITE_COMPOSITION_ALPHA * (Number(baselineComp) / 100)
+      ) / (winN + KIMARITE_COMPOSITION_ALPHA);
+      const diff = adjustedComp - Number(baselineComp);
+
+      if (diff >= 20) {
+        candidates.push({
+          type: "kimarite_bias",
+          course,
+          kimarite: kind.name,
+          win_n: winN,
+          count,
+          adjusted_rate: pct(adjustedComp),
+          baseline_rate: pct(baselineComp),
+          diff_pt: pct(diff),
+          baseline_scope: scope,
+          strength_ratio: pct(diff / 20),
+        });
+      }
+    }
+  }
+
+  // (3) ST特性: コース平均を本人全体STへK=15で縮小し、
+  //     本人平均より0.02以上速い、n>=30
+  const courseRows = [];
+  let personalStSum = 0;
+  let personalStN = 0;
+  for (let course = 1; course <= 6; course++) {
+    const row = courseRowMap.get(`${regno}|${course}`);
+    if (!row) continue;
+    courseRows.push(row);
+    const validN = courseValidStN(row);
+    const avg = n(row.avg_st);
+    if (validN > 0 && avg != null) {
+      personalStSum += avg * validN;
+      personalStN += validN;
+    }
+  }
+  const personalAvgSt = personalStN > 0 ? personalStSum / personalStN : null;
+
+  if (personalAvgSt != null) {
+    for (const row of courseRows) {
+      const starts = Number(row.n || 0);
+      const validN = courseValidStN(row);
+      const rawAvg = n(row.avg_st);
+      if (starts < 30 || validN <= 0 || rawAvg == null) continue;
+
+      const adjustedAvg = shrinkMean(
+        rawAvg * validN,
+        validN,
+        personalAvgSt,
+        SHRINK_K
+      );
+      const diff = adjustedAvg - personalAvgSt;
+
+      if (diff <= -0.02) {
+        candidates.push({
+          type: "st_fast",
+          course: Number(row.course),
+          n: starts,
+          valid_st_n: validN,
+          adjusted_st: st(adjustedAvg),
+          personal_avg_st: st(personalAvgSt),
+          diff: st(diff),
+          strength_ratio: pct(Math.abs(diff) / 0.02),
+        });
+      }
+    }
+  }
+
+  // (4) 場別3連対率: 本人全場基準との差 ±10pt、n>=20
+  for (const row of byVenue.get(String(regno)) || []) {
+    if (Number(row.n || 0) < 20) continue;
+    const diff = Number(row.adjusted_ren3_diff_pt);
+    if (!Number.isFinite(diff) || Math.abs(diff) < 10) continue;
+
+    candidates.push({
+      type: "venue_ren3",
+      direction: diff > 0 ? "strong" : "weak",
+      place_no: Number(row.place_no),
+      n: Number(row.n),
+      adjusted_rate: pct(row.adjusted_ren3_rate),
+      baseline_rate: pct(row.personal_all_venue_ren3_rate),
+      diff_pt: pct(diff),
+      strength_ratio: pct(Math.abs(diff) / 10),
+    });
+  }
+
+  return strongestPerType(candidates);
+}
+
+function defensePayload(regno) {
+  const rows = byDefense.get(String(regno)) || [];
+  const out = {
+    period: {
+      start: rows[0]?.period_start || null,
+      end: rows[0]?.period_end || null,
+    },
+    minimum_events: 8,
+    baseline_method: "national_average_weighted_to_the_racers_victim_course_mix",
+    makurare: null,
+    sasare: null,
+  };
+
+  for (const r of rows) {
+    const item = {
+      n: Number(r.n),
+      avg_finish: pct(r.avg_finish),
+      top3_n: Number(r.top3_n),
+      top3_rate: pct(r.top3_rate),
+      baseline_avg_finish: pct(r.baseline_avg_finish),
+      baseline_top3_rate: pct(r.baseline_top3_rate),
+      avg_finish_diff: pct(r.avg_finish_diff),
+      top3_diff_pt: pct(r.top3_diff_pt),
+      sufficient: Boolean(r.sufficient),
+    };
+    if (r.defense_type === "まくられ") out.makurare = item;
+    if (r.defense_type === "差され") out.sasare = item;
+  }
+
+  return out;
+}
+
+await mkdir(resolve(OUT_DIR, "features"), { recursive: true });
+
+let insightNoneCount = 0;
+for (const racer of racers) {
+  const regno = Number(racer.regno);
+  const insights = buildInsightsForRacer(regno);
+  if (!insights.length) insightNoneCount++;
+
+  await writeJson(
+    resolve(OUT_DIR, "features", `${regno}.json`),
+    {
+      schema_version: 1,
+      generated_at: generatedAt,
+      data_period: period,
+      insights: {
+        max_items: 3,
+        selection_rule: "strongest_one_per_category_then_threshold_ratio_desc",
+        items: insights,
+        empty_message: insights.length ? null : "特筆すべき偏りなし",
+        note: "insight detection always uses shrinkage-adjusted values to avoid low-sample false positives",
+      },
+      defense_1y: defensePayload(regno),
+    }
+  );
+}
+
+console.log(`feature_files=${racers.length}`);
+console.log(`insight_none_racers=${insightNoneCount}`);
+console.log(`defense_rows=${defenseRows.length}`);
+
+
 await writeJson(
   resolve(OUT_DIR, "index", "ranking_catalog.json"),
   {
@@ -1136,6 +1388,7 @@ const indexBytes = Buffer.byteLength(compactJson(index), "utf8");
 console.log(`course_rows=${courseStats.length}`);
 console.log(`venue_rows=${venueStats.length}`);
 console.log(`kimarite_rows=${kimariteRows.length}`);
+console.log(`defense_rows=${defenseRows.length}`);
 console.log(`index_bytes=${indexBytes}`);
 if (indexBytes > 500_000) {
   throw new Error(`index.json too large: ${indexBytes} bytes`);

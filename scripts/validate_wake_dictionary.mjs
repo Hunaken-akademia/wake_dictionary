@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * WAKE辞典 v1.8 validation
+ * WAKE辞典 v2.0 validation
  *
  * Global checks:
  *  - racer course n sum == racer total starts
@@ -241,7 +241,7 @@ try {
 
   const bAttackers = await readJson("index/ranking_b_attackers.json");
   const bGradeOk = bAttackers.rows.every((r) => r.grade === "B1" || r.grade === "B2");
-  console.log(`[5] B級の刺客 grade filter: ${bGradeOk?"PASS":"FAIL"} rows=${bAttackers.rows.length}`);
+  console.log(`[5] B級の伏兵 grade filter: ${bGradeOk?"PASS":"FAIL"} rows=${bAttackers.rows.length}`);
   if (!bGradeOk) failed = true;
 
 } catch (e) {
@@ -275,6 +275,67 @@ try {
   if (badSufficient || badAlpha) failed = true;
 } catch (e) {
   console.log(`[6] v1.8 generated data checks FAIL: ${e.message || e}`);
+  failed = true;
+}
+
+
+// 7) v2.0 defense + insight checks
+try {
+  const defense = await fetchAll("wake_dictionary_defense_stats_1y_v1", {
+    select:"regno,defense_type,n,avg_finish,top3_rate,baseline_avg_finish,baseline_top3_rate,sufficient",
+    order:"regno.asc,defense_type.asc"
+  });
+
+  const defenseTypeOk = defense.every((r) =>
+    r.defense_type === "まくられ" || r.defense_type === "差され"
+  );
+  const defenseRangeOk = defense.every((r) =>
+    Number(r.n) >= 1 &&
+    Number(r.avg_finish) >= 2 &&
+    Number(r.avg_finish) <= 6 &&
+    Number(r.top3_rate) >= 0 &&
+    Number(r.top3_rate) <= 100 &&
+    Boolean(r.sufficient) === (Number(r.n) >= 8)
+  );
+  console.log(`[7] defense types ${defenseTypeOk?"PASS":"FAIL"} rows=${defense.length}`);
+  console.log(`[7] defense ranges/minimum-events ${defenseRangeOk?"PASS":"FAIL"}`);
+  if (!defenseTypeOk || !defenseRangeOk) failed = true;
+
+  const fs = await import("node:fs/promises");
+  const featureFiles = (await fs.readdir(resolve(OUT_DIR, "features")))
+    .filter((f) => f.endsWith(".json"));
+
+  const featureCountOk = featureFiles.length === racers.length;
+  let badInsightCount = 0;
+  let badInsightThreshold = 0;
+  let badDefensePayload = 0;
+
+  for (const file of featureFiles) {
+    const d = await readJson(`features/${file}`);
+    const items = d?.insights?.items || [];
+    if (items.length > 3) badInsightCount++;
+
+    for (const x of items) {
+      if (!(Number(x.strength_ratio) >= 1)) badInsightThreshold++;
+    }
+
+    for (const k of ["makurare","sasare"]) {
+      const x = d?.defense_1y?.[k];
+      if (!x) continue;
+      if (Boolean(x.sufficient) !== (Number(x.n) >= 8)) badDefensePayload++;
+    }
+  }
+
+  console.log(`[7] feature files=${featureFiles.length}/${racers.length} ${featureCountOk?"PASS":"FAIL"}`);
+  console.log(`[7] insights max3 ${badInsightCount===0?"PASS":"FAIL"} bad=${badInsightCount}`);
+  console.log(`[7] insight thresholds ${badInsightThreshold===0?"PASS":"FAIL"} bad=${badInsightThreshold}`);
+  console.log(`[7] defense payload sufficient>=8 ${badDefensePayload===0?"PASS":"FAIL"} bad=${badDefensePayload}`);
+
+  if (!featureCountOk || badInsightCount || badInsightThreshold || badDefensePayload) {
+    failed = true;
+  }
+} catch (e) {
+  console.log(`[7] v2.0 feature validation FAIL: ${e.message || e}`);
   failed = true;
 }
 
