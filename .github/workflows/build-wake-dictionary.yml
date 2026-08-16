@@ -2,6 +2,12 @@ name: Build and Deploy WAKE Dictionary
 
 on:
   workflow_dispatch:
+    inputs:
+      force_full_refresh:
+        description: "Force one full aggregate cache refresh"
+        required: false
+        default: false
+        type: boolean
   schedule:
     # JST 04:30 = UTC 19:30 (previous day)
     - cron: "30 19 * * *"
@@ -49,14 +55,22 @@ jobs:
           RACER_KANA_CONCURRENCY: "6"
         run: node scripts/collect_racer_kana.mjs
 
-      - name: Generate static JSON
+      - name: Refresh incremental aggregate cache
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          WAKE_FORCE_FULL_REFRESH: ${{ inputs.force_full_refresh && '1' || '0' }}
+          WAKE_RACER_BATCH_SIZE: "50"
+          WAKE_VENUE_BATCH_SIZE: "50"
+          WAKE_KIMARITE_BATCH_SIZE: "10"
+          WAKE_DEFENSE_BATCH_SIZE: "20"
+        run: node scripts/refresh_incremental_cache.mjs
+
+      - name: Generate static JSON from cache
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           WAKE_DICTIONARY_OUT_DIR: public/data
-          WAKE_RACER_BATCH_SIZE: "50"
-          WAKE_VENUE_BATCH_SIZE: "50"
-          WAKE_KIMARITE_BATCH_SIZE: "10"
         run: node scripts/export_wake_dictionary.mjs
 
       - name: Today entries + validation in parallel
