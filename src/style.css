@@ -101,3 +101,237 @@ tr:hover td { background:rgba(255,255,255,.025); }
   .stat-grid { grid-template-columns:repeat(2,1fr); }
   .card { min-height:145px; }
 }
+
+
+/* v1.6: 用語ガイド / 補正ON-OFF */
+.header-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+.guide-button {
+  border: 1px solid var(--line);
+  background: rgba(255,255,255,.035);
+  color: #c9d9e6;
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.guide-button:hover { border-color: rgba(53,214,255,.4); color: var(--text); }
+
+.adjust-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255,255,255,.025);
+  color: var(--text);
+  user-select: none;
+}
+.adjust-switch.compact {
+  min-height: 36px;
+  padding: 5px 8px;
+  gap: 6px;
+}
+.adjust-switch input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+.adjust-label {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+.adjust-state {
+  min-width: 25px;
+  color: var(--accent2);
+  font-size: 11px;
+  font-weight: 900;
+}
+.adjust-switch input:not(:checked) ~ .adjust-state { color: #c0cbd4; }
+.switch-track {
+  width: 36px;
+  height: 20px;
+  border-radius: 999px;
+  background: #26384a;
+  padding: 2px;
+  transition: .18s ease;
+  display: inline-flex;
+  align-items: center;
+}
+.switch-knob {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: white;
+  transform: translateX(0);
+  transition: .18s ease;
+}
+.adjust-switch input:checked ~ .switch-track {
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+}
+.adjust-switch input:checked ~ .switch-track .switch-knob {
+  transform: translateX(16px);
+}
+
+.mode-panel {
+  margin: 0 0 12px;
+  padding: 12px 14px;
+  border: 1px solid rgba(53,214,255,.16);
+  background: rgba(53,214,255,.035);
+  border-radius: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+.mode-panel strong { display: block; font-size: 13px; }
+.mode-panel p { margin: 4px 0 0; color: var(--muted); font-size: 11px; line-height: 1.55; }
+
+.badge-button {
+  cursor: pointer;
+  font-family: inherit;
+}
+.badge-button:hover { color: var(--text); border-color: rgba(53,214,255,.35); }
+.mode-badge { color: #bfeee0; }
+
+.mini-help {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  margin-left: 4px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  color: var(--muted);
+  background: transparent;
+  font-size: 10px;
+  font-weight: 900;
+}
+.text-link {
+  border: 0;
+  background: transparent;
+  padding: 0 0 0 4px;
+  color: var(--accent);
+  font-weight: 800;
+  font-size: inherit;
+}
+
+.ranking-filters {
+  grid-template-columns: 2fr 1fr 1fr !important;
+}
+.action-field { display: flex; flex-direction: column; }
+.action-field .primary { width: 100%; }
+
+.ranking-description {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255,255,255,.02);
+  display: grid;
+  gap: 5px;
+}
+.ranking-description strong { font-size: 13px; color: var(--text); }
+.ranking-description span { color: var(--muted); font-size: 12px; line-height: 1.6; }
+
+.modal-open { overflow: hidden; }
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+  background: rgba(1,7,13,.72);
+  backdrop-filter: blur(9px);
+}
+.modal-backdrop.show { display: flex; }
+.guide-modal {
+  width: min(720px, 100%);
+  max-height: min(82vh, 820px);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid rgba(166,205,235,.18);
+  border-radius: 20px;
+  background: #091827;
+  box-shadow: 0 28px 80px rgba(0,0,0,.46);
+}
+.guide-head {
+  padding: 18px 18px 14px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+}
+.guide-head h2 { margin: 4px 0 0; font-size: 22px; }
+.icon-button {
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255,255,255,.035);
+  color: var(--text);
+  font-size: 22px;
+  line-height: 1;
+}
+.guide-list {
+  overflow-y: auto;
+  padding: 4px 18px 18px;
+}
+.guide-item {
+  padding: 14px 0;
+  border-bottom: 1px solid rgba(255,255,255,.06);
+}
+.guide-item:last-child { border-bottom: 0; }
+.guide-item h3 { margin: 0 0 6px; font-size: 14px; color: var(--accent2); }
+.guide-item p { margin: 0; color: #b7c7d4; line-height: 1.75; font-size: 12px; }
+
+@media (max-width: 860px) {
+  .header-inner { gap: 8px; }
+  .brand { min-width: 0; }
+  .brand span:last-child { white-space: nowrap; }
+  .brand small { display: none; }
+  .header-actions { gap: 5px; }
+  .guide-button { padding: 7px 8px; font-size: 11px; }
+  .adjust-switch.compact .adjust-label { display: none; }
+  .ranking-filters { grid-template-columns: 1fr 1fr !important; }
+  .ranking-filters .action-field { grid-column: 1 / -1; }
+}
+
+@media (max-width: 560px) {
+  .header-inner { min-height: 62px; height: auto; padding: 8px 0; }
+  .brand-mark { width: 32px; height: 32px; }
+  .brand { font-size: 15px; gap: 7px; }
+  .guide-button { font-size: 0; width: 34px; height: 34px; padding: 0; }
+  .guide-button::before { content: "?"; font-size: 14px; }
+  .adjust-switch.compact { padding: 4px 6px; min-height: 34px; }
+  .adjust-switch.compact .adjust-state { display: none; }
+  .switch-track { width: 34px; height: 19px; }
+  .switch-knob { width: 15px; height: 15px; }
+  .adjust-switch input:checked ~ .switch-track .switch-knob { transform: translateX(15px); }
+
+  .section-title {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .section-title h2 { font-size: 28px; line-height: 1.25; }
+  .mode-panel { align-items: flex-start; }
+  .mode-panel > div:first-child { flex: 1; min-width: 0; }
+  .ranking-filters { grid-template-columns: 1fr !important; }
+  .ranking-filters .action-field { grid-column: auto; }
+  .guide-modal { max-height: 88vh; border-radius: 16px; }
+}
