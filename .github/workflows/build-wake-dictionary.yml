@@ -41,6 +41,11 @@ jobs:
           WAKE_DICTIONARY_OUT_DIR: public/data
         run: node scripts/export_wake_dictionary.mjs
 
+      - name: Generate today's race entries
+        env:
+          WAKE_DICTIONARY_OUT_DIR: public/data
+        run: node scripts/collect_today_entries.mjs
+
       - name: Validate global aggregates
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -58,6 +63,7 @@ jobs:
           test -f public/data/meta/baselines.json
           test -f public/data/index/reverse_catalog.json
           test -f public/data/index/ranking_catalog.json
+          test -f public/data/today_entries.json
           echo "public/data ready"
           du -sh public/data
           find public/data/racers -type f | wc -l
