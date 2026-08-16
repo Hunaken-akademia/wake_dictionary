@@ -490,3 +490,19 @@ tr:hover td { background:rgba(255,255,255,.025); }
 }
 .login-foot { margin-top: 16px; color: var(--muted); font-size: 10px; line-height: 1.6; }
 .guide-logout { padding-top: 16px; text-align: right; }
+
+
+/* v1.9 official kana */
+.kana-inline {
+  display: block;
+  margin-top: 2px;
+  color: #7893a8;
+  font-size: 10px;
+  font-weight: 700;
+}
+.racer-kana {
+  margin: -2px 0 7px;
+  color: var(--muted);
+  font-size: 12px;
+  letter-spacing: .08em;
+}

@@ -62,6 +62,20 @@ const GUIDE_ITEMS = [
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
 const fmt = (v, d = 1) => Number.isFinite(Number(v)) ? Number(v).toFixed(d) : "—";
+function normalizeSearchText(value) {
+  return [...String(value ?? "").normalize("NFKC")]
+    .map((ch) => {
+      const cp = ch.codePointAt(0);
+      if (cp >= 0x30A1 && cp <= 0x30F6) {
+        return String.fromCodePoint(cp - 0x60);
+      }
+      return ch;
+    })
+    .join("")
+    .replace(/[・･\s　]+/g, "")
+    .toLowerCase();
+}
+
 const esc = (s) => String(s ?? "").replace(
   /[&<>"']/g,
   (m) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[m])
@@ -364,7 +378,7 @@ function bindSearch() {
   if (!input || !box) return;
 
   const render = () => {
-    const q = input.value.trim().toLowerCase();
+    const q = normalizeSearchText(input.value);
 
     if (!q) {
       box.classList.remove("show");
@@ -373,9 +387,9 @@ function bindSearch() {
     }
 
     const rows = keepToday(state.index).filter((r) =>
-      String(r.regno).includes(q) ||
-      String(r.name || "").toLowerCase().includes(q) ||
-      String(r.kana || r.reading || "").toLowerCase().includes(q)
+      normalizeSearchText(r.regno).includes(q) ||
+      normalizeSearchText(r.name).includes(q) ||
+      normalizeSearchText(r.kana || r.kana_katakana || r.reading).includes(q)
     ).slice(0, 8);
 
     box.innerHTML = rows.length
@@ -384,6 +398,7 @@ function bindSearch() {
             <span class="suggestion-main">
               <strong>${esc(r.name)}</strong>
               <span class="meta">#${r.regno}</span>
+              ${r.kana ? `<span class="kana-inline">${esc(r.kana)}</span>` : ""}
               ${todayInline(r.regno)}
             </span>
             <span class="meta">${esc(r.grade || "—")}・${esc(r.branch || "—")}</span>
@@ -952,6 +967,7 @@ async function renderRacer(regno) {
           <div>
             <div class="kicker">RACER PROFILE</div>
             <h2>${esc(r.name)}</h2>
+            ${r.kana ? `<div class="racer-kana">${esc(r.kana)}</div>` : ""}
             <div class="detail-meta">登録 ${r.regno} / ${esc(r.grade||"—")} / ${esc(r.branch||"—")} / ${d.totals?.n ?? 0}走</div>
             ${todayRaceLabel(r.regno) ? `<div class="today-detail">本日出走予定：${esc(todayRaceLabel(r.regno))}</div>` : ""}
           </div>

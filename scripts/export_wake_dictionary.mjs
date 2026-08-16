@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * WAKE辞典 JSON exporter v1.8
+ * WAKE辞典 JSON exporter v1.9
  *
  * v1.5.4:
  *   - metadata / racers / profiles の初期取得も完全逐次化
@@ -312,6 +312,12 @@ const racerProfiles = await fetchAllWithTimeoutRetry(
   { order: "regno.asc" }
 );
 
+console.log("fetch official racer kana...");
+const racerKanaRows = await fetchAllWithTimeoutRetry(
+  "wake_dictionary_racer_kana_v1",
+  { order: "regno.asc" }
+);
+
 if (metadataRows.length !== 1) {
   throw new Error(`wake_dictionary_metadata_v1 expected 1 row, got ${metadataRows.length}`);
 }
@@ -365,6 +371,7 @@ const byCourse = groupBy(courseStats, "regno");
 const byVenue = groupBy(venueStats, "regno");
 const byKimarite = groupBy(kimariteRows, "regno");
 const profileByRegno = new Map(racerProfiles.map((r) => [String(r.regno), r]));
+const kanaByRegno = new Map(racerKanaRows.map((r) => [String(r.regno), r]));
 
 const period = {
   requested_start: md.requested_start,
@@ -380,12 +387,17 @@ for (const racer of racers) {
   const name = racer.racer_name || "";
 
   const profile = profileByRegno.get(key) || null;
+  const kanaProfile = kanaByRegno.get(key) || null;
   const grade = profile?.grade || null;
   const branch = profile?.branch || null;
+  const kana = kanaProfile?.kana_hiragana || null;
+  const kana_katakana = kanaProfile?.kana_katakana || null;
 
   index.push({
     regno,
     name,
+    kana,
+    kana_katakana,
     grade,
     branch,
   });
@@ -527,6 +539,8 @@ for (const racer of racers) {
     racer: {
       regno,
       name,
+      kana,
+      kana_katakana,
       grade,
       branch,
     },
@@ -540,6 +554,7 @@ for (const racer of racers) {
     venue_stats: venue,
     notes: {
       grade_branch_source: "wake_dictionary_racer_profile_v1 / BOATCAST_STR3",
+      kana_source: "wake_dictionary_racer_kana_v1 / BOATRACE_OFFICIAL_PROFILE",
       kimarite_meaning: "breakdown_of_how_the_racer_won; not an attacking-style rate",
       kimarite_display_rule: "when sufficient=false (win_n<20), UI must hide rates and show counts only",
       kimarite_composition_alpha: KIMARITE_COMPOSITION_ALPHA,
@@ -1103,6 +1118,13 @@ await writeJson(resolve(OUT_DIR, "metadata.json"), {
     branch_available: racerProfiles.some((r) => String(r.branch || "").trim()),
     grade_profile_count: racerProfiles.filter((r) => /^(A1|A2|B1|B2)$/.test(String(r.grade || ""))).length,
     branch_profile_count: racerProfiles.filter((r) => String(r.branch || "").trim()).length,
+    kana_profile_count: racerKanaRows.filter((r) => String(r.kana_hiragana || "").trim()).length,
+    kana_coverage_pct: racers.length
+      ? Math.round(
+          100000 * racerKanaRows.filter((r) => String(r.kana_hiragana || "").trim()).length
+          / racers.length
+        ) / 1000
+      : 0,
     grade_profile_coverage_pct: pct(
       100 * racerProfiles.filter((r) => /^(A1|A2|B1|B2)$/.test(String(r.grade || ""))).length
       / Math.max(racers.length, 1)
