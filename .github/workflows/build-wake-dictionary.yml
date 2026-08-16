@@ -42,6 +42,13 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: node scripts/collect_racer_profiles.mjs
 
+      - name: Refresh official racer kana
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          RACER_KANA_CONCURRENCY: "6"
+        run: node scripts/collect_racer_kana.mjs
+
       - name: Generate static JSON
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
