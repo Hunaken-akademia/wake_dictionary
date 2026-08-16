@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 /**
- * WAKE辞典 JSON exporter v1
+ * WAKE辞典 JSON exporter v1.2.3
  *
- * Runtime DB access is performed ONLY during the nightly build.
- * The deployed site reads generated static JSON and never connects to Supabase.
+ * v1.2.3:
+ *   集計VIEWを全選手一括で読むと PostgREST の statement timeout に達するため、
+ *   regno を25人ずつに分割して取得する。
+ *   DBスキーマ・集計ロジックは変更しない。
  *
  * Required env:
  *   SUPABASE_URL
@@ -23,6 +25,7 @@ const SUPABASE_URL = RAW_SUPABASE_URL
 const SERVICE_KEY = String(process.env.SUPABASE_SERVICE_KEY || "");
 const OUT_DIR = resolve(process.env.WAKE_DICTIONARY_OUT_DIR || "public/data");
 const PAGE_SIZE = 1000;
+const RACER_BATCH_SIZE = 25;
 
 if (!SUPABASE_URL || !SERVICE_KEY) {
   throw new Error("SUPABASE_URL / SUPABASE_SERVICE_KEY are required");
@@ -43,9 +46,12 @@ async function fetchAll(resource, { select = "*", order = "", filters = [] } = {
     if (order) qs.set("order", order);
     for (const [k, v] of filters) qs.append(k, v);
 
-    const res = await fetch(`${SUPABASE_URL}/rest/v1/${resource}?${qs}`, { headers });
+    const url = `${SUPABASE_URL}/rest/v1/${resource}?${qs}`;
+    const res = await fetch(url, { headers });
     const text = await res.text();
-    if (!res.ok) throw new Error(`${resource} ${res.status}: ${text.slice(0, 1000)}`);
+    if (!res.ok) {
+      throw new Error(`${resource} ${res.status}: ${text.slice(0, 1000)}`);
+    }
 
     const rows = text ? JSON.parse(text) : [];
     if (!Array.isArray(rows)) throw new Error(`${resource}: expected array response`);
@@ -53,6 +59,32 @@ async function fetchAll(resource, { select = "*", order = "", filters = [] } = {
     if (rows.length < PAGE_SIZE) break;
   }
   return out;
+}
+
+function chunk(array, size) {
+  const out = [];
+  for (let i = 0; i < array.length; i += size) out.push(array.slice(i, i + size));
+  return out;
+}
+
+async function fetchByRacerBatches(resource, racers, { order = "regno.asc", select = "*" } = {}) {
+  const regnos = racers.map((r) => Number(r.regno)).filter(Number.isFinite);
+  const batches = chunk(regnos, RACER_BATCH_SIZE);
+  const all = [];
+
+  for (let i = 0; i < batches.length; i++) {
+    const ids = batches[i];
+    const filter = `in.(${ids.join(",")})`;
+    const rows = await fetchAll(resource, {
+      select,
+      order,
+      filters: [["regno", filter]],
+    });
+    all.push(...rows);
+    console.log(`${resource}: batch ${i + 1}/${batches.length} rows=${rows.length}`);
+  }
+
+  return all;
 }
 
 function n(v) {
@@ -87,24 +119,33 @@ async function writeJson(path, value) {
 
 console.log("WAKE dictionary export start");
 console.log(`out=${OUT_DIR}`);
+console.log(`racer_batch_size=${RACER_BATCH_SIZE}`);
 
-const [
-  metadataRows,
-  racers,
-  courseStats,
-  venueStats,
-  kimariteRows,
-] = await Promise.all([
+// 軽いVIEWを先に取得し、regno一覧を確定する。
+const [metadataRows, racers] = await Promise.all([
   fetchAll("wake_dictionary_metadata_v1"),
   fetchAll("wake_dictionary_racers_v1", { order: "regno.asc" }),
-  fetchAll("wake_dictionary_course_stats_v1", { order: "regno.asc,course.asc" }),
-  fetchAll("wake_dictionary_venue_stats_v1", { order: "regno.asc,place_no.asc" }),
-  fetchAll("wake_dictionary_win_kimarite_v1", { order: "regno.asc,course.asc,kimarite.asc" }),
 ]);
 
 if (metadataRows.length !== 1) {
   throw new Error(`wake_dictionary_metadata_v1 expected 1 row, got ${metadataRows.length}`);
 }
+
+console.log(`racers=${racers.length}`);
+
+// 重い集計VIEWは全選手一括で読まず、regno 25人単位で取得する。
+const [courseStats, venueStats, kimariteRows] = await Promise.all([
+  fetchByRacerBatches("wake_dictionary_course_stats_v1", racers, {
+    order: "regno.asc,course.asc",
+  }),
+  fetchByRacerBatches("wake_dictionary_venue_stats_v1", racers, {
+    order: "regno.asc,place_no.asc",
+  }),
+  fetchByRacerBatches("wake_dictionary_win_kimarite_v1", racers, {
+    order: "regno.asc,course.asc,kimarite.asc",
+  }),
+]);
+
 const md = metadataRows[0];
 const generatedAt = new Date().toISOString();
 
@@ -128,8 +169,6 @@ for (const racer of racers) {
   const key = String(regno);
   const name = racer.racer_name || "";
 
-  // grade / branch are intentionally null.
-  // The audited racer_master schema does not contain these fields.
   index.push({
     regno,
     name,
@@ -312,7 +351,9 @@ await writeJson(resolve(OUT_DIR, "metadata.json"), {
 });
 
 const indexBytes = Buffer.byteLength(compactJson(index), "utf8");
-console.log(`racers=${racers.length}`);
+console.log(`course_rows=${courseStats.length}`);
+console.log(`venue_rows=${venueStats.length}`);
+console.log(`kimarite_rows=${kimariteRows.length}`);
 console.log(`index_bytes=${indexBytes}`);
 if (indexBytes > 500_000) {
   throw new Error(`index.json too large: ${indexBytes} bytes`);
