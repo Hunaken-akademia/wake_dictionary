@@ -25,7 +25,6 @@ jobs:
         with:
           node-version: "24"
 
-      # package-lock.json がまだrepoに無いため npm ci / setup-node cache は使わない
       - name: Install dependencies
         run: npm install --no-audit --no-fund
 
@@ -66,21 +65,40 @@ jobs:
       - name: Install Vercel CLI
         run: npm install --global vercel@latest
 
+      # v1.5.3:
+      # .vercel/project.json を手作りしない。
+      # Project ID / Org ID の取り違えを避けるため、
+      # Vercel CLI自身に team slug + project name でリンクさせる。
       - name: Link Vercel project
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
         run: |
-          mkdir -p .vercel
-          printf '{"orgId":"%s","projectId":"%s"}\n' "$VERCEL_ORG_ID" "$VERCEL_PROJECT_ID" > .vercel/project.json
-          vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+          rm -rf .vercel
+          vercel link \
+            --yes \
+            --project wake-dictionary \
+            --scope hunaken-akademia \
+            --token="$VERCEL_TOKEN"
+
+      - name: Pull Vercel production settings
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          vercel pull \
+            --yes \
+            --environment=production \
+            --scope hunaken-akademia \
+            --token="$VERCEL_TOKEN"
 
       - name: Deploy production to Vercel
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
         run: |
-          DEPLOY_URL="$(vercel deploy --prod --yes --token="$VERCEL_TOKEN")"
+          DEPLOY_URL="$(vercel deploy \
+            --prod \
+            --yes \
+            --scope hunaken-akademia \
+            --token="$VERCEL_TOKEN")"
           echo "Production deployment: $DEPLOY_URL"
           echo "WAKE_DEPLOY_URL=$DEPLOY_URL" >> "$GITHUB_ENV"
 
