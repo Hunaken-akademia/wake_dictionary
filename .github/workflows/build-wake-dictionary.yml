@@ -97,6 +97,10 @@ jobs:
           test -f public/data/index/reverse_catalog.json
           test -f public/data/index/ranking_catalog.json
           test -f public/data/today_entries.json
+          test -d public/data/features
+          FEATURE_COUNT="$(find public/data/features -type f -name '*.json' | wc -l)"
+          echo "feature_files=$FEATURE_COUNT"
+          test "$FEATURE_COUNT" -gt 1000
           echo "public/data ready"
           du -sh public/data
           find public/data/racers -type f | wc -l
