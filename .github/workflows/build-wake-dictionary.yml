@@ -64,6 +64,7 @@ jobs:
           WAKE_VENUE_BATCH_SIZE: "50"
           WAKE_KIMARITE_BATCH_SIZE: "10"
           WAKE_DEFENSE_BATCH_SIZE: "20"
+          WAKE_VENUE_COURSE_BATCH_SIZE: "25"
         run: node scripts/refresh_incremental_cache.mjs
 
       - name: Generate static JSON from cache
