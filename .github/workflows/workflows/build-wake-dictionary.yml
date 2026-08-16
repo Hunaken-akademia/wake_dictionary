@@ -1,0 +1,48 @@
+name: Build WAKE Dictionary JSON
+
+on:
+  workflow_dispatch:
+  schedule:
+    # JST 04:30 = UTC 19:30 (previous day)
+    - cron: "30 19 * * *"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Refresh racer grade and branch
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          RACER_PROFILE_FRESH_DAYS: "7"
+          RACER_PROFILE_CONCURRENCY: "4"
+        run: node scripts/collect_racer_profiles.mjs
+
+      - name: Generate static JSON
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          WAKE_DICTIONARY_OUT_DIR: public/data
+        run: node scripts/export_wake_dictionary.mjs
+
+      - name: Validate global aggregates
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          VERIFY_A1_REGNO: ${{ vars.VERIFY_A1_REGNO }}
+          VERIFY_A2_REGNO: ${{ vars.VERIFY_A2_REGNO }}
+          VERIFY_B1_REGNO: ${{ vars.VERIFY_B1_REGNO }}
+        run: node scripts/validate_wake_dictionary.mjs
+
+      # Vercel deployment is intentionally left to the repository's existing
+      # Vercel Git integration or a separate deployment job.
+      # The deployed site itself performs no Supabase access.
