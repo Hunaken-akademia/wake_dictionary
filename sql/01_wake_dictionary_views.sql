@@ -26,13 +26,15 @@
 --   そのためこのv1では grade / branch をNULLとして出力する。
 --
 -- 集計期間:
---   JST日付 `(now() at time zone 'Asia/Tokyo')::date` を基準に直近24ヶ月。
+--   JST生成日の前日を `data_end` とし、完了日ベースで直近24ヶ月。
 --   DBに24ヶ月未満しか無い場合は、存在する最古日以降だけが実データ期間になる。
 -- ============================================================================
 
 
 -- ----------------------------------------------------------------------------
 -- 1. 24ヶ月の正規化ベース
+-- v1.3.1: 当日K票の取込と検証が競合しないよう、JST前日をdata_endに固定。
+--         夜間生成中に当日データが増えても、同一実行内の集計母集団は変化しない。
 --
 -- 不成立レース:
 --   races.excluded_from_analysis=true は除外。
@@ -57,7 +59,8 @@ create or replace view public.wake_dictionary_base_24m_v1 as
 with params as (
   select
     (now() at time zone 'Asia/Tokyo')::date as generated_on,
-    ((now() at time zone 'Asia/Tokyo')::date - interval '24 months')::date as requested_start
+    ((now() at time zone 'Asia/Tokyo')::date - 1) as data_end,
+    (((now() at time zone 'Asia/Tokyo')::date - 1) - interval '24 months')::date as requested_start
 ),
 race_validity as (
   select
@@ -73,7 +76,7 @@ race_validity as (
    and r.place_no = rr.place_no
    and r.race_no = rr.race_no
   where rr.race_date >= p.requested_start
-    and rr.race_date <= p.generated_on
+    and rr.race_date <= p.data_end
   group by rr.race_date, rr.place_no, rr.race_no
 ),
 joined as (
@@ -119,7 +122,7 @@ joined as (
    and s.race_no = rr.race_no
    and s.boat_no = rr.boat
   where rr.race_date >= p.requested_start
-    and rr.race_date <= p.generated_on
+    and rr.race_date <= p.data_end
 )
 select
   j.race_date,
@@ -162,7 +165,8 @@ create or replace view public.wake_dictionary_metadata_v1 as
 with params as (
   select
     (now() at time zone 'Asia/Tokyo')::date as generated_on,
-    ((now() at time zone 'Asia/Tokyo')::date - interval '24 months')::date as requested_start
+    ((now() at time zone 'Asia/Tokyo')::date - 1) as data_end,
+    (((now() at time zone 'Asia/Tokyo')::date - 1) - interval '24 months')::date as requested_start
 ),
 raw_period as (
   select
@@ -173,7 +177,7 @@ raw_period as (
   from public.race_results rr
   cross join params p
   where rr.race_date >= p.requested_start
-    and rr.race_date <= p.generated_on
+    and rr.race_date <= p.data_end
 ),
 usable as (
   select
@@ -199,7 +203,7 @@ staging_coverage as (
    and s.race_no = rr.race_no
    and s.boat_no = rr.boat
   where rr.race_date >= p.requested_start
-    and rr.race_date <= p.generated_on
+    and rr.race_date <= p.data_end
 ),
 excluded_races as (
   select
@@ -221,7 +225,7 @@ excluded_races as (
      and r.place_no = rr.place_no
      and r.race_no = rr.race_no
     where rr.race_date >= p.requested_start
-      and rr.race_date <= p.generated_on
+      and rr.race_date <= p.data_end
     group by rr.race_date, rr.place_no, rr.race_no
   ) x
 ),
@@ -232,7 +236,7 @@ refund_related as (
     from public.race_results_staging s
     cross join params p
     where s.race_date >= p.requested_start
-      and s.race_date <= p.generated_on
+      and s.race_date <= p.data_end
       and s.result_status in ('F','L','ABSENT','SCRATCHED')
   ) q
 )
@@ -260,7 +264,8 @@ select
   false as grade_available,
   false as branch_available,
   er.winner_status_unknown_races,
-  er.winner_status_false_races
+  er.winner_status_false_races,
+  p.data_end
 from params p
 cross join raw_period rp
 cross join usable u
