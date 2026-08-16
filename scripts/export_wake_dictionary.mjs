@@ -16,7 +16,10 @@
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
-const SUPABASE_URL = String(process.env.SUPABASE_URL || "").replace(/\/+$/, "");
+const RAW_SUPABASE_URL = String(process.env.SUPABASE_URL || "").trim();
+const SUPABASE_URL = RAW_SUPABASE_URL
+  .replace(/\/+$/, "")
+  .replace(/\/rest\/v1$/i, "");
 const SERVICE_KEY = String(process.env.SUPABASE_SERVICE_KEY || "");
 const OUT_DIR = resolve(process.env.WAKE_DICTIONARY_OUT_DIR || "public/data");
 const PAGE_SIZE = 1000;

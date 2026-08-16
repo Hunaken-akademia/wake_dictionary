@@ -18,7 +18,10 @@
  * from wake_dictionary_base_24m_v1 row data for those racers.
  */
 
-const SUPABASE_URL = String(process.env.SUPABASE_URL || "").replace(/\/+$/, "");
+const RAW_SUPABASE_URL = String(process.env.SUPABASE_URL || "").trim();
+const SUPABASE_URL = RAW_SUPABASE_URL
+  .replace(/\/+$/, "")
+  .replace(/\/rest\/v1$/i, "");
 const SERVICE_KEY = String(process.env.SUPABASE_SERVICE_KEY || "");
 if (!SUPABASE_URL || !SERVICE_KEY) throw new Error("SUPABASE_URL / SUPABASE_SERVICE_KEY required");
 

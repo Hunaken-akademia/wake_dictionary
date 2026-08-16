@@ -1,4 +1,4 @@
-# WAKE辞典 集計レイヤー v1.2.1
+# WAKE辞典 集計レイヤー v1.2.2
 
 ## 状態
 
@@ -266,3 +266,13 @@ v1.2.1では既存列の順序・名前を完全維持し、
 
 既存VIEWを削除したり変更したりする破壊操作は不要。
 `sql/01_wake_dictionary_views.sql` をそのまま再実行すればよい。
+
+## v1.2.2修正
+
+GitHub Actionsで `PGRST125 Invalid path specified in request URL` が出たケースに対応。
+
+`SUPABASE_URL` に次のどちらを登録していても動作するよう自動正規化:
+- `https://PROJECT_REF.supabase.co`
+- `https://PROJECT_REF.supabase.co/rest/v1`
+
+export / validate の両方で末尾 `/rest/v1` を除去してからREST URLを組み立てる。
