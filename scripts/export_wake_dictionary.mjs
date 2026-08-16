@@ -1,6 +1,11 @@
 #!/usr/bin/env node
 /**
- * WAKE辞典 JSON exporter v1.4
+ * WAKE辞典 JSON exporter v1.5.4
+ *
+ * v1.5.4:
+ *   - metadata / racers / profiles の初期取得も完全逐次化
+ *   - 57014時のみ最大4回リトライ
+ *   - 集計式・SQL・JSON仕様は変更しない
  *
  * v1.2.4:
  *   - 重い集計VIEWを同時実行せず、順番に取得
@@ -72,6 +77,36 @@ function chunk(array, size) {
 function isStatementTimeout(error) {
   const s = String(error?.message || error || "");
   return s.includes('"code":"57014"') || s.includes("statement timeout");
+}
+
+
+function sleep(ms) {
+  return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
+}
+
+async function fetchAllWithTimeoutRetry(
+  resource,
+  options = {},
+  { attempts = 4, baseDelayMs = 1500 } = {}
+) {
+  let lastError;
+
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      return await fetchAll(resource, options);
+    } catch (error) {
+      lastError = error;
+      if (!isStatementTimeout(error) || attempt === attempts) throw error;
+
+      const delay = baseDelayMs * attempt;
+      console.warn(
+        `${resource}: statement timeout attempt ${attempt}/${attempts}; retry in ${delay}ms`
+      );
+      await sleep(delay);
+    }
+  }
+
+  throw lastError;
 }
 
 async function fetchRacerChunkAdaptive(
@@ -250,12 +285,26 @@ console.log("WAKE dictionary export start");
 console.log(`out=${OUT_DIR}`);
 console.log(`racer_batch_size=${RACER_BATCH_SIZE}`);
 
-// 軽いVIEWを先に取得し、regno一覧を確定する。
-const [metadataRows, racers, racerProfiles] = await Promise.all([
-  fetchAll("wake_dictionary_metadata_v1"),
-  fetchAll("wake_dictionary_racers_v1", { order: "regno.asc" }),
-  fetchAll("wake_dictionary_racer_profile_v1", { order: "regno.asc" }),
-]);
+// 基本VIEWも同時実行しない。
+// metadata_v1 は1行でも内部集計が重いため、racers/profile と並列にすると
+// Supabase statement timeoutを起こし得る。
+// 57014時だけ短い待機を挟んで最大4回再試行する。
+console.log("fetch metadata...");
+const metadataRows = await fetchAllWithTimeoutRetry(
+  "wake_dictionary_metadata_v1"
+);
+
+console.log("fetch racers...");
+const racers = await fetchAllWithTimeoutRetry(
+  "wake_dictionary_racers_v1",
+  { order: "regno.asc" }
+);
+
+console.log("fetch racer profiles...");
+const racerProfiles = await fetchAllWithTimeoutRetry(
+  "wake_dictionary_racer_profile_v1",
+  { order: "regno.asc" }
+);
 
 if (metadataRows.length !== 1) {
   throw new Error(`wake_dictionary_metadata_v1 expected 1 row, got ${metadataRows.length}`);
