@@ -29,7 +29,7 @@ const RANKING_DESCRIPTIONS = {
   "ranking_sashi_B1.json":
     "B1選手のうち、「差し」で1着になる率が高い選手を比較します。",
   "ranking_in_unstable_A1.json":
-    "A1選手の1コース逃げ率を低い順に表示。イン戦で相手側を検討したい時の参考用です。",
+    "A1選手の1コース逃げ率を低い順に表示。少母数の偶然を避けるため、このランキングは既定50走以上です。イン戦で相手側を検討したい時の参考用です。",
   "ranking_dash_B1.json":
     "B1選手の4〜6コースにおける3連対率を比較。ダッシュ域から舟券に絡む力を見るランキングです。",
   "ranking_start_no_f_A1.json":
@@ -128,9 +128,78 @@ function keepToday(rows) {
 }
 
 async function getJson(path) {
-  const r = await fetch(path, { cache: "no-store" });
+  const isDataPath = path.startsWith(`${DATA_ROOT}/`);
+  const target = isDataPath
+    ? `/api/data?path=${encodeURIComponent(path.slice(DATA_ROOT.length + 1))}`
+    : path;
+  const r = await fetch(target, { cache: "no-store", credentials: "same-origin" });
+  if (r.status === 401) {
+    renderLogin("認証の有効期限が切れました。もう一度パスワードを入力してください。");
+    throw new Error("authentication required");
+  }
   if (!r.ok) throw new Error(`${path}: HTTP ${r.status}`);
   return r.json();
+}
+
+
+function loginMarkup(message = "") {
+  return `
+    <main class="login-page">
+      <section class="login-card">
+        <div class="brand login-brand">
+          <span class="brand-mark">W</span>
+          <span>WAKE辞典<small>RACER DATA DICTIONARY</small></span>
+        </div>
+        <div class="kicker">MEMBERS ONLY</div>
+        <h1>WAKE辞典へアクセス</h1>
+        <p>購入者向けパスワードを入力してください。この端末では認証状態を30日間保持します。</p>
+        ${message ? `<div class="login-message">${esc(message)}</div>` : ""}
+        <form id="loginForm" class="login-form">
+          <input id="loginPassword" type="password" autocomplete="current-password" placeholder="パスワード" required>
+          <button class="primary" type="submit">辞典を開く</button>
+        </form>
+        <div class="login-foot">※ パスワードの第三者共有・転載は禁止転載は禁止です。</div>
+      </section>
+    </main>`;
+}
+
+function renderLogin(message = "") {
+  app.innerHTML = loginMarkup(message);
+  const form = $("#loginForm");
+  const input = $("#loginPassword");
+  input?.focus();
+  form?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const password = input?.value || "";
+    const button = form.querySelector("button");
+    button.disabled = true;
+    button.textContent = "確認中…";
+    try {
+      const r = await fetch("/api/login", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ password }),
+        credentials: "same-origin",
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        renderLogin(data?.error === "invalid_password" ? "パスワードが違います。" : "認証できませんでした。");
+        return;
+      }
+      await boot(true);
+    } catch {
+      renderLogin("通信エラーが発生しました。時間をおいてもう一度お試しください。");
+    }
+  });
+}
+
+async function hasSession() {
+  try {
+    const r = await fetch("/api/session", { cache: "no-store", credentials: "same-origin" });
+    return r.ok;
+  } catch {
+    return false;
+  }
 }
 
 function guideModal() {
@@ -151,6 +220,7 @@ function guideModal() {
               <p>${esc(desc)}</p>
             </article>
           `).join("")}
+          <div class="guide-logout"><button class="back" data-logout>この端末の認証を解除</button></div>
         </div>
       </div>
     </div>`;
@@ -209,6 +279,11 @@ function bindGlobalControls() {
 
   $$("[data-guide-open]").forEach((b) => b.addEventListener("click", openGuide));
   $$("[data-guide-close]").forEach((b) => b.addEventListener("click", closeGuide));
+  $$("[data-logout]").forEach((b) => b.addEventListener("click", async () => {
+    await fetch("/api/logout", { method: "POST", credentials: "same-origin" }).catch(() => {});
+    localStorage.removeItem("wake_today_only");
+    renderLogin("この端末の認証を解除しました。");
+  }));
 
   $("#guideModal")?.addEventListener("click", (e) => {
     if (e.target.id === "guideModal") closeGuide();
@@ -245,7 +320,7 @@ function hero() {
         <input id="racerSearch" class="search" placeholder="選手名・登録番号で検索" autocomplete="off" />
         <div class="search-tools">
           ${todayFilterControl()}
-          <span class="search-hint">※かな検索は読み仮名データ確認後に対応予定</span>
+          <span class="search-hint">かな検索は公式読みデータ取得後に対応</span>
         </div>
         <div id="suggestions" class="suggestions"></div>
       </div>
@@ -515,6 +590,10 @@ async function renderReverse() {
   loadReverse();
 }
 
+function rankingDefaultMinN(file) {
+  return String(file || "").includes("ranking_in_unstable_") ? 50 : 30;
+}
+
 const rankingDefs = [
   ["ranking_b_attackers.json","B級の刺客"],
   ["ranking_makuri_B1.json","B1 まくり職人"],
@@ -719,7 +798,11 @@ async function renderRanking() {
   shell(rankingView());
   bindGlobalControls();
 
-  $("#rankingFile")?.addEventListener("change", loadRanking);
+  $("#rankingFile")?.addEventListener("change", () => {
+    const input = $("#rankMinN");
+    if (input) input.value = String(rankingDefaultMinN($("#rankingFile")?.value));
+    loadRanking();
+  });
   $("#rankReload")?.addEventListener("click", loadRanking);
 
   let timer = null;
@@ -790,7 +873,7 @@ function kimariteTable(rows) {
                 <td>${fmt(r.raw_rate)}%</td>
                 <td class="rate">${fmt(r.adjusted_rate)}%</td>
                 <td class="${Number(r.diff_pt_adjusted)>=0?"pos":"neg"}">${Number(r.diff_pt_adjusted)>=0?"+":""}${fmt(r.diff_pt_adjusted)}pt</td>
-              ` : `<td colspan="3" class="meta">勝利数5未満のため率は非表示</td>`}
+              ` : `<td colspan="3" class="meta">勝利数20未満のため率は非表示</td>`}
             </tr>`).join("")}
           </tbody>
         </table>
@@ -806,7 +889,7 @@ function kimariteTable(rows) {
             <td>${r.course}</td><td>${r.win_n}</td><td>${esc(r.kimarite)}</td><td>${r.count}</td>
             ${r.sufficient
               ? `<td class="rate">${fmt(r.raw_rate)}%</td>`
-              : `<td class="meta">勝利数5未満のため率は非表示</td>`}
+              : `<td class="meta">勝利数20未満のため率は非表示</td>`}
           </tr>`).join("")}
         </tbody>
       </table>
@@ -893,7 +976,7 @@ async function renderRacer(regno) {
 
         <div class="section-title" style="margin-top:32px">
           <h2>勝った時の決まり手</h2>
-          <p>勝利数5未満は率非表示</p>
+          <p>勝利数20未満は率非表示</p>
         </div>
         ${kimariteTable(d.win_kimarite_breakdown)}
 
@@ -915,7 +998,15 @@ async function renderRacer(regno) {
   }
 }
 
-async function boot() {
+async function boot(skipSessionCheck = false) {
+  if (!skipSessionCheck) {
+    const ok = await hasSession();
+    if (!ok) {
+      renderLogin();
+      return;
+    }
+  }
+
   try {
     const [index, baselines, todayMeta] = await Promise.all([
       getJson(`${DATA_ROOT}/index.json`),

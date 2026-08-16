@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * WAKE辞典 v1.4 validation
+ * WAKE辞典 v1.8 validation
  *
  * Global checks:
  *  - racer course n sum == racer total starts
@@ -249,6 +249,34 @@ try {
   failed = true;
 }
 
+
+
+// 6) v1.8 public-readiness checks
+try {
+  const unstableA1 = await readJson("index/ranking_in_unstable_A1.json");
+  const unstableMinOk = Number(unstableA1.default_min_n) === 50;
+  console.log(`[6] in-unstable default_min_n=50 ${unstableMinOk?"PASS":"FAIL"}`);
+  if (!unstableMinOk) failed = true;
+
+  const sampleRacerFiles = (await import("node:fs/promises")).readdir;
+  const files = await sampleRacerFiles(resolve(OUT_DIR, "racers"));
+  let badSufficient = 0;
+  let badAlpha = 0;
+  for (const file of files) {
+    if (!file.endsWith(".json")) continue;
+    const d = await readJson(`racers/${file}`);
+    for (const c of d.win_kimarite_breakdown || []) {
+      if (Boolean(c.sufficient) !== (Number(c.win_n) >= 20)) badSufficient++;
+      if (Number(c.alpha) !== 30) badAlpha++;
+    }
+  }
+  console.log(`[6] kimarite detail min wins=20 ${badSufficient===0?"PASS":"FAIL"} bad=${badSufficient}`);
+  console.log(`[6] kimarite detail alpha=30 ${badAlpha===0?"PASS":"FAIL"} bad=${badAlpha}`);
+  if (badSufficient || badAlpha) failed = true;
+} catch (e) {
+  console.log(`[6] v1.8 generated data checks FAIL: ${e.message || e}`);
+  failed = true;
+}
 
 if (failed) {
   console.error("WAKE dictionary validation FAILED");

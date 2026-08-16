@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * WAKE辞典 JSON exporter v1.5.4
+ * WAKE辞典 JSON exporter v1.8
  *
  * v1.5.4:
  *   - metadata / racers / profiles の初期取得も完全逐次化
@@ -32,7 +32,9 @@ const SUPABASE_URL = RAW_SUPABASE_URL
 const SERVICE_KEY = String(process.env.SUPABASE_SERVICE_KEY || "");
 const OUT_DIR = resolve(process.env.WAKE_DICTIONARY_OUT_DIR || "public/data");
 const PAGE_SIZE = 1000;
-const RACER_BATCH_SIZE = 25;
+const RACER_BATCH_SIZE = Math.max(5, Number(process.env.WAKE_RACER_BATCH_SIZE || 50));
+const VENUE_BATCH_SIZE = Math.max(5, Number(process.env.WAKE_VENUE_BATCH_SIZE || 50));
+const KIMARITE_BATCH_SIZE = Math.max(2, Number(process.env.WAKE_KIMARITE_BATCH_SIZE || 10));
 
 if (!SUPABASE_URL || !SERVICE_KEY) {
   throw new Error("SUPABASE_URL / SUPABASE_SERVICE_KEY are required");
@@ -204,6 +206,8 @@ async function writeJson(path, value) {
 
 
 const SHRINK_K = 15;
+const KIMARITE_COMPOSITION_ALPHA = 30;
+const KIMARITE_COMPOSITION_MIN_WINS = 20;
 const GRADES = ["A1", "A2", "B1", "B2"];
 const GRADE_SCOPES = ["ALL", ...GRADES];
 const KIMARITE_KINDS = [
@@ -283,7 +287,9 @@ function addCourseToAccumulator(acc, courseRow, kimRowsForCourse) {
 
 console.log("WAKE dictionary export start");
 console.log(`out=${OUT_DIR}`);
-console.log(`racer_batch_size=${RACER_BATCH_SIZE}`);
+console.log(`course_batch_size=${RACER_BATCH_SIZE}`);
+console.log(`venue_batch_size=${VENUE_BATCH_SIZE}`);
+console.log(`kimarite_batch_size=${KIMARITE_BATCH_SIZE}`);
 
 // 基本VIEWも同時実行しない。
 // metadata_v1 は1行でも内部集計が重いため、racers/profile と並列にすると
@@ -315,13 +321,14 @@ console.log(`racers=${racers.length}`);
 // 重い集計VIEWは同時実行しない。
 // Supabaseのstatement timeoutを避けるため、順番に取得する。
 // さらに各バッチで57014が出た場合は、そのバッチだけ自動で半分ずつ再分割する。
+const exportStartedAt = Date.now();
 console.log("fetch course stats...");
 const courseStats = await fetchByRacerBatches(
   "wake_dictionary_course_stats_v1",
   racers,
   {
     order: "regno.asc,course.asc",
-    batchSize: 25,
+    batchSize: RACER_BATCH_SIZE,
   }
 );
 
@@ -331,7 +338,7 @@ const venueStats = await fetchByRacerBatches(
   racers,
   {
     order: "regno.asc,place_no.asc",
-    batchSize: 25,
+    batchSize: VENUE_BATCH_SIZE,
   }
 );
 
@@ -343,10 +350,11 @@ const kimariteRows = await fetchByRacerBatches(
     order: "regno.asc,course.asc,kimarite.asc",
     // このVIEWが最も重いため初期値を小さくする。
     // それでもtimeoutしたバッチは5→3+2→...のように自動分割される。
-    batchSize: 5,
+    batchSize: KIMARITE_BATCH_SIZE,
   }
 );
 
+console.log(`heavy_view_fetch_seconds=${((Date.now()-exportStartedAt)/1000).toFixed(1)}`);
 const md = metadataRows[0];
 const generatedAt = new Date().toISOString();
 
@@ -481,24 +489,34 @@ for (const racer of racers) {
   const kimByCourse = new Map();
   for (const r of kimRows) {
     const c = Number(r.course);
+    const winN = Number(r.win_n || 0);
+    const count = Number(r.kimarite_n || 0);
+    const nationalRate = Number(r.national_rate || 0);
+    const rawRate = winN > 0 ? 100 * count / winN : 0;
+    const adjustedRate = 100 * (
+      count + KIMARITE_COMPOSITION_ALPHA * (nationalRate / 100)
+    ) / (winN + KIMARITE_COMPOSITION_ALPHA);
+    const sufficient = winN >= KIMARITE_COMPOSITION_MIN_WINS;
+
     if (!kimByCourse.has(c)) {
       kimByCourse.set(c, {
         course: c,
-        win_n: Number(r.win_n),
-        sufficient: Boolean(r.sufficient),
-        alpha: 10,
+        win_n: winN,
+        sufficient,
+        alpha: KIMARITE_COMPOSITION_ALPHA,
+        minimum_wins_for_rate: KIMARITE_COMPOSITION_MIN_WINS,
         items: [],
       });
     }
     kimByCourse.get(c).items.push({
       kimarite: r.kimarite,
-      count: Number(r.kimarite_n),
-      raw_rate: pct(r.raw_rate),
-      adjusted_rate: pct(r.adjusted_rate),
-      national_same_course_rate: pct(r.national_rate),
-      diff_pt_raw: pct(r.raw_diff_pt),
-      diff_pt_adjusted: pct(r.adjusted_diff_pt),
-      notable: Boolean(r.notable),
+      count,
+      raw_rate: pct(rawRate),
+      adjusted_rate: pct(adjustedRate),
+      national_same_course_rate: pct(nationalRate),
+      diff_pt_raw: pct(rawRate - nationalRate),
+      diff_pt_adjusted: pct(adjustedRate - nationalRate),
+      notable: sufficient && Math.abs(adjustedRate - nationalRate) >= 15,
     });
   }
 
@@ -523,7 +541,8 @@ for (const racer of racers) {
     notes: {
       grade_branch_source: "wake_dictionary_racer_profile_v1 / BOATCAST_STR3",
       kimarite_meaning: "breakdown_of_how_the_racer_won; not an attacking-style rate",
-      kimarite_display_rule: "when sufficient=false (win_n<5), UI must hide rates and show counts only",
+      kimarite_display_rule: "when sufficient=false (win_n<20), UI must hide rates and show counts only",
+      kimarite_composition_alpha: KIMARITE_COMPOSITION_ALPHA,
       refund_races: "valid completed races are retained; F/L ST is excluded from avg ST",
     },
   };
@@ -951,7 +970,7 @@ for (const grade of GRADES) {
       `${grade} イン不安定`,
       unstable,
       "adjRate_asc",
-      { grade, course: 1, metric: "nige_win_rate_per_start" }
+      { grade, course: 1, metric: "nige_win_rate_per_start", default_min_n: 50 }
     );
   }
 

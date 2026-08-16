@@ -447,3 +447,46 @@ tr:hover td { background:rgba(255,255,255,.025); }
     gap: 8px;
   }
 }
+
+
+/* v1.8: paid access login */
+.login-page {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+.login-card {
+  width: min(460px, 100%);
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  background: linear-gradient(180deg, rgba(14,32,52,.95), rgba(8,21,36,.96));
+  padding: 24px;
+  box-shadow: 0 24px 80px rgba(0,0,0,.34);
+}
+.login-brand { margin-bottom: 28px; }
+.login-card h1 { margin: 8px 0 10px; font-size: 28px; }
+.login-card > p { color: var(--muted); line-height: 1.7; font-size: 13px; }
+.login-form { display: grid; gap: 10px; margin-top: 20px; }
+.login-form input {
+  width: 100%;
+  padding: 14px 15px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #071522;
+  color: var(--text);
+  outline: none;
+}
+.login-form input:focus { border-color: var(--accent); }
+.login-form .primary { min-height: 46px; }
+.login-message {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(255,122,158,.08);
+  border: 1px solid rgba(255,122,158,.2);
+  color: #ffd1dc;
+  font-size: 12px;
+}
+.login-foot { margin-top: 16px; color: var(--muted); font-size: 10px; line-height: 1.6; }
+.guide-logout { padding-top: 16px; text-align: right; }

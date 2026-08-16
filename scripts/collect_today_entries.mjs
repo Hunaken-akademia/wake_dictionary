@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * WAKE辞典 v1.7 本日出走予定コレクタ
+ * WAKE辞典 v1.8 本日出走予定コレクタ
  *
  * 公式BOATCAST str3の当日出走表を読み、
  * public/data/today_entries.json を生成する。
@@ -18,7 +18,7 @@ const OUT_DIR = resolve(process.env.WAKE_DICTIONARY_OUT_DIR || "public/data");
 const OUT_FILE = resolve(OUT_DIR, "today_entries.json");
 const CONCURRENCY = Math.max(
   1,
-  Math.min(12, Number(process.env.TODAY_ENTRIES_CONCURRENCY || 6))
+  Math.min(12, Number(process.env.TODAY_ENTRIES_CONCURRENCY || 10))
 );
 
 function jstDate() {
@@ -113,65 +113,63 @@ function parseStr3(raw, placeNo, raceNo, readingDiag) {
 
 async function main() {
   const date = jstDate();
-  const jobs = [];
-  for (let placeNo = 1; placeNo <= 24; placeNo++) {
-    for (let raceNo = 1; raceNo <= 12; raceNo++) {
-      jobs.push({ placeNo, raceNo });
-    }
-  }
-
   console.log(`today_entries_date=${date}`);
-  console.log(`jobs=${jobs.length}`);
   console.log(`concurrency=${CONCURRENCY}`);
 
   const readingDiag = { rowsWithCandidate: 0, samples: [] };
   const racerMap = new Map();
-  let cursor = 0;
   let successRaces = 0;
   let skippedRaces = 0;
 
-  async function worker() {
-    while (true) {
-      const i = cursor++;
-      if (i >= jobs.length) return;
-      const job = jobs[i];
-
-      try {
-        const raw = await fetchText(str3Url(date, job.placeNo, job.raceNo));
-        const rows = parseStr3(raw, job.placeNo, job.raceNo, readingDiag);
-        if (!rows.length) {
-          skippedRaces++;
-          continue;
-        }
-
-        successRaces++;
-
-        for (const r of rows) {
-          if (!racerMap.has(r.regno)) {
-            racerMap.set(r.regno, {
-              regno: r.regno,
-              name: r.racer_name,
-              entries: [],
-            });
-          }
-          const target = racerMap.get(r.regno);
-          const key = `${r.place_no}|${r.race_no}`;
-          if (!target.entries.some((e) => `${e.place_no}|${e.race_no}` === key)) {
-            target.entries.push({
-              place_no: r.place_no,
-              race_no: r.race_no,
-            });
-          }
-        }
-      } catch {
-        skippedRaces++;
+  function addRows(rows) {
+    for (const r of rows) {
+      if (!racerMap.has(r.regno)) {
+        racerMap.set(r.regno, { regno: r.regno, name: r.racer_name, entries: [] });
+      }
+      const target = racerMap.get(r.regno);
+      const key = `${r.place_no}|${r.race_no}`;
+      if (!target.entries.some((e) => `${e.place_no}|${e.race_no}` === key)) {
+        target.entries.push({ place_no: r.place_no, race_no: r.race_no });
       }
     }
   }
 
-  await Promise.all(
-    Array.from({ length: CONCURRENCY }, () => worker())
+  async function runJobs(jobs) {
+    let cursor = 0;
+    async function worker() {
+      while (true) {
+        const i = cursor++;
+        if (i >= jobs.length) return;
+        const job = jobs[i];
+        try {
+          const raw = await fetchText(str3Url(date, job.placeNo, job.raceNo));
+          const rows = parseStr3(raw, job.placeNo, job.raceNo, readingDiag);
+          if (!rows.length) { skippedRaces++; continue; }
+          successRaces++;
+          addRows(rows);
+        } catch {
+          skippedRaces++;
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, jobs.length || 1) }, () => worker()));
+  }
+
+  // まず24場の1Rだけ確認。1Rが存在する場だけを開催場とみなし、
+  // 2〜12Rを取得する。全24場×12R=288リクエストを毎朝叩かない。
+  const probeJobs = Array.from({ length: 24 }, (_, i) => ({ placeNo: i + 1, raceNo: 1 }));
+  await runJobs(probeJobs);
+
+  const activePlaces = [...new Set(
+    [...racerMap.values()].flatMap((r) => r.entries.map((e) => e.place_no))
+  )].sort((a,b) => a-b);
+
+  const remainingJobs = activePlaces.flatMap((placeNo) =>
+    Array.from({ length: 11 }, (_, i) => ({ placeNo, raceNo: i + 2 }))
   );
+  console.log(`active_places=${activePlaces.length}`);
+  console.log(`jobs_total=${probeJobs.length + remainingJobs.length}`);
+  await runJobs(remainingJobs);
 
   const racers = [...racerMap.values()]
     .map((r) => ({
