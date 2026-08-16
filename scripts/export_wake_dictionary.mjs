@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * WAKE辞典 JSON exporter v1.3
+ * WAKE辞典 JSON exporter v1.4
  *
  * v1.2.4:
  *   - 重い集計VIEWを同時実行せず、順番に取得
@@ -165,6 +165,85 @@ function compactJson(v) {
 async function writeJson(path, value) {
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, compactJson(value) + "\n", "utf8");
+}
+
+
+const SHRINK_K = 15;
+const GRADES = ["A1", "A2", "B1", "B2"];
+const GRADE_SCOPES = ["ALL", ...GRADES];
+const KIMARITE_KINDS = [
+  { name: "逃げ", slug: "nige" },
+  { name: "差し", slug: "sashi" },
+  { name: "まくり", slug: "makuri" },
+  { name: "まくり差し", slug: "makurizashi" },
+  { name: "抜き", slug: "nuki" },
+  { name: "恵まれ", slug: "megumare" },
+];
+
+function safeDiv(num, den) {
+  return den > 0 ? num / den : 0;
+}
+function ratePct(num, den) {
+  return 100 * safeDiv(num, den);
+}
+function shrinkRatePct(count, total, baselinePct, k = SHRINK_K) {
+  if (!(total >= 0) || baselinePct == null) return null;
+  return 100 * (count + k * (baselinePct / 100)) / (total + k);
+}
+function shrinkMean(sum, total, baselineMean, k = SHRINK_K) {
+  if (!(total >= 0) || baselineMean == null) return null;
+  return (sum + k * baselineMean) / (total + k);
+}
+function sortDescAdjusted(a, b) {
+  return (
+    Number(b.adjRate ?? -Infinity) - Number(a.adjRate ?? -Infinity) ||
+    Number(b.rawRate ?? -Infinity) - Number(a.rawRate ?? -Infinity) ||
+    Number(b.n ?? 0) - Number(a.n ?? 0) ||
+    Number(a.regno) - Number(b.regno)
+  );
+}
+function sortAscAdjusted(a, b) {
+  return (
+    Number(a.adjRate ?? Infinity) - Number(b.adjRate ?? Infinity) ||
+    Number(a.rawRate ?? Infinity) - Number(b.rawRate ?? Infinity) ||
+    Number(b.n ?? 0) - Number(a.n ?? 0) ||
+    Number(a.regno) - Number(b.regno)
+  );
+}
+function makeAccumulator() {
+  return {
+    starts: 0,
+    wins: 0,
+    ren2: 0,
+    ren3: 0,
+    validStN: 0,
+    stSum: 0,
+    fCount: 0,
+    lCount: 0,
+    kimarite: Object.fromEntries(KIMARITE_KINDS.map((k) => [k.name, 0])),
+  };
+}
+function addCourseToAccumulator(acc, courseRow, kimRowsForCourse) {
+  const starts = Number(courseRow?.n || 0);
+  const fCount = Number(courseRow?.f_count || 0);
+  const lCount = Number(courseRow?.l_count || 0);
+  const otherMissing = Number(courseRow?.st_missing_count || 0);
+  const validStN = Math.max(0, starts - fCount - lCount - otherMissing);
+  const avgSt = n(courseRow?.avg_st);
+
+  acc.starts += starts;
+  acc.wins += Number(courseRow?.win_n || 0);
+  acc.ren2 += Number(courseRow?.ren2_n || 0);
+  acc.ren3 += Number(courseRow?.ren3_n || 0);
+  acc.validStN += validStN;
+  if (avgSt != null) acc.stSum += avgSt * validStN;
+  acc.fCount += fCount;
+  acc.lCount += lCount;
+
+  for (const row of kimRowsForCourse || []) {
+    const kind = String(row.kimarite || "");
+    if (kind in acc.kimarite) acc.kimarite[kind] += Number(row.kimarite_n || 0);
+  }
 }
 
 console.log("WAKE dictionary export start");
@@ -402,6 +481,535 @@ for (const racer of racers) {
 
   await writeJson(resolve(OUT_DIR, "racers", `${regno}.json`), payload);
 }
+
+
+// ============================================================================
+// v1.4 差別化機能用: 級別基準値 / 逆引き / ランキングを事前計算
+//
+// 重要:
+// - 決まり手の「率」は、勝利内構成比ではなく「そのコースの出走数に対する
+//   その決まり手での1着率」を使用する。
+// - 縮小推定 K=15。
+// - 級別指定時の基準は「級別×コース」。
+// - ALL指定時の基準は「全国×コース」。
+// - UI側では既定の最低走数を30にするが、JSON自体は全件保持する。
+// ============================================================================
+
+const courseRowMap = new Map();
+for (const r of courseStats) {
+  courseRowMap.set(`${r.regno}|${r.course}`, r);
+}
+
+const kimRowsByCell = new Map();
+for (const r of kimariteRows) {
+  const key = `${r.regno}|${r.course}`;
+  if (!kimRowsByCell.has(key)) kimRowsByCell.set(key, []);
+  kimRowsByCell.get(key).push(r);
+}
+
+function gradeOf(regno) {
+  return profileByRegno.get(String(regno))?.grade || null;
+}
+function branchOf(regno) {
+  return profileByRegno.get(String(regno))?.branch || null;
+}
+
+// grade × course と ALL × course の基準値を作る。
+const baselineAcc = new Map();
+for (const scope of GRADE_SCOPES) {
+  for (let course = 1; course <= 6; course++) {
+    baselineAcc.set(`${scope}|${course}`, makeAccumulator());
+  }
+}
+
+for (const racer of racers) {
+  const regno = Number(racer.regno);
+  const grade = gradeOf(regno);
+
+  for (let course = 1; course <= 6; course++) {
+    const row = courseRowMap.get(`${regno}|${course}`);
+    if (!row) continue;
+    const kim = kimRowsByCell.get(`${regno}|${course}`) || [];
+
+    addCourseToAccumulator(baselineAcc.get(`ALL|${course}`), row, kim);
+    if (GRADES.includes(grade)) {
+      addCourseToAccumulator(baselineAcc.get(`${grade}|${course}`), row, kim);
+    }
+  }
+}
+
+const baselineJson = {
+  schema_version: 1,
+  generated_at: generatedAt,
+  data_period: period,
+  shrinkage_k: SHRINK_K,
+  note: "grade-specific ranking baselines are grade×course; ALL uses national×course",
+  grade_course: {},
+};
+
+for (const scope of GRADE_SCOPES) {
+  baselineJson.grade_course[scope] = {};
+  for (let course = 1; course <= 6; course++) {
+    const a = baselineAcc.get(`${scope}|${course}`);
+    const obj = {
+      n: a.starts,
+      win_rate: pct(ratePct(a.wins, a.starts)),
+      ren2_rate: pct(ratePct(a.ren2, a.starts)),
+      ren3_rate: pct(ratePct(a.ren3, a.starts)),
+      avg_st: a.validStN ? st(a.stSum / a.validStN) : null,
+      valid_st_n: a.validStN,
+      f_count: a.fCount,
+      l_count: a.lCount,
+      kimarite_win_rate_per_start: {},
+    };
+    for (const kind of KIMARITE_KINDS) {
+      obj.kimarite_win_rate_per_start[kind.name] = pct(
+        ratePct(a.kimarite[kind.name], a.starts)
+      );
+    }
+    baselineJson.grade_course[scope][String(course)] = obj;
+  }
+}
+
+await writeJson(resolve(OUT_DIR, "meta", "baselines.json"), baselineJson);
+
+// ----------------------------------------------------------------------------
+// ★1 逆引き検索
+// 6コース × 6決まり手 × (ALL + A1/A2/B1/B2)
+// ----------------------------------------------------------------------------
+const reverseCatalog = [];
+let reverseFileCount = 0;
+
+for (let course = 1; course <= 6; course++) {
+  for (const kind of KIMARITE_KINDS) {
+    for (const scope of GRADE_SCOPES) {
+      const baselineRate =
+        baselineJson.grade_course[scope][String(course)]
+          .kimarite_win_rate_per_start[kind.name];
+
+      const rows = [];
+
+      for (const racer of racers) {
+        const regno = Number(racer.regno);
+        const grade = gradeOf(regno);
+        if (scope !== "ALL" && grade !== scope) continue;
+
+        const courseRow = courseRowMap.get(`${regno}|${course}`);
+        if (!courseRow) continue;
+
+        const starts = Number(courseRow.n || 0);
+        const kimRow = (kimRowsByCell.get(`${regno}|${course}`) || [])
+          .find((x) => x.kimarite === kind.name);
+        const count = Number(kimRow?.kimarite_n || 0);
+
+        const rawRate = ratePct(count, starts);
+        const adjRate = shrinkRatePct(count, starts, baselineRate);
+
+        rows.push({
+          regno,
+          name: racer.racer_name || "",
+          grade,
+          branch: branchOf(regno),
+          course,
+          kimarite: kind.name,
+          n: starts,
+          count,
+          rawRate: pct(rawRate),
+          adjRate: pct(adjRate),
+          baselineRate: pct(baselineRate),
+          diffPtAdjusted: pct(adjRate - baselineRate),
+          shrinkageK: SHRINK_K,
+        });
+      }
+
+      rows.sort(sortDescAdjusted);
+
+      const filename =
+        `reverse_course${course}_${kind.slug}_${scope}.json`;
+
+      await writeJson(
+        resolve(OUT_DIR, "index", filename),
+        {
+          schema_version: 1,
+          generated_at: generatedAt,
+          data_period: period,
+          course,
+          kimarite: kind.name,
+          grade: scope,
+          default_min_n: 30,
+          sort: "adjRate_desc",
+          rows,
+        }
+      );
+
+      reverseCatalog.push({
+        file: filename,
+        course,
+        kimarite: kind.name,
+        kimarite_slug: kind.slug,
+        grade: scope,
+        rows: rows.length,
+      });
+      reverseFileCount++;
+    }
+  }
+}
+
+await writeJson(
+  resolve(OUT_DIR, "index", "reverse_catalog.json"),
+  {
+    schema_version: 1,
+    generated_at: generatedAt,
+    default_min_n: 30,
+    files: reverseCatalog,
+  }
+);
+
+// ----------------------------------------------------------------------------
+// ★2 級別×決まり手ランキング
+// ----------------------------------------------------------------------------
+function aggregateRacer(regno, coursesWanted) {
+  const acc = makeAccumulator();
+  for (const course of coursesWanted) {
+    const row = courseRowMap.get(`${regno}|${course}`);
+    if (!row) continue;
+    addCourseToAccumulator(
+      acc,
+      row,
+      kimRowsByCell.get(`${regno}|${course}`) || []
+    );
+  }
+  return acc;
+}
+
+function weightedBaselinePct(scope, coursesWanted, metric, racerRegno) {
+  let weighted = 0;
+  let totalN = 0;
+  for (const course of coursesWanted) {
+    const row = courseRowMap.get(`${racerRegno}|${course}`);
+    const starts = Number(row?.n || 0);
+    if (!starts) continue;
+    const b = baselineJson.grade_course[scope]?.[String(course)];
+    if (!b) continue;
+    const value = Number(b[metric]);
+    if (!Number.isFinite(value)) continue;
+    weighted += starts * value;
+    totalN += starts;
+  }
+  return totalN ? weighted / totalN : null;
+}
+
+function weightedKimariteBaselinePct(scope, coursesWanted, kimarite, racerRegno) {
+  let weighted = 0;
+  let totalN = 0;
+  for (const course of coursesWanted) {
+    const row = courseRowMap.get(`${racerRegno}|${course}`);
+    const starts = Number(row?.n || 0);
+    if (!starts) continue;
+    const b =
+      baselineJson.grade_course[scope]?.[String(course)]
+        ?.kimarite_win_rate_per_start?.[kimarite];
+    if (b == null) continue;
+    weighted += starts * Number(b);
+    totalN += starts;
+  }
+  return totalN ? weighted / totalN : null;
+}
+
+function weightedStBaseline(scope, coursesWanted, racerRegno) {
+  let sum = 0;
+  let totalValid = 0;
+  for (const course of coursesWanted) {
+    const row = courseRowMap.get(`${racerRegno}|${course}`);
+    if (!row) continue;
+    const starts = Number(row.n || 0);
+    const validN = Math.max(
+      0,
+      starts -
+        Number(row.f_count || 0) -
+        Number(row.l_count || 0) -
+        Number(row.st_missing_count || 0)
+    );
+    const b = baselineJson.grade_course[scope]?.[String(course)]?.avg_st;
+    if (!validN || b == null) continue;
+    sum += validN * Number(b);
+    totalValid += validN;
+  }
+  return totalValid ? sum / totalValid : null;
+}
+
+function baseEntry(racer, acc) {
+  const regno = Number(racer.regno);
+  return {
+    regno,
+    name: racer.racer_name || "",
+    grade: gradeOf(regno),
+    branch: branchOf(regno),
+    n: acc.starts,
+  };
+}
+
+const rankingCatalog = [];
+
+async function writeRanking(filename, title, rows, sort, extra = {}) {
+  await writeJson(
+    resolve(OUT_DIR, "index", filename),
+    {
+      schema_version: 1,
+      generated_at: generatedAt,
+      data_period: period,
+      title,
+      default_min_n: 30,
+      shrinkage_k: SHRINK_K,
+      sort,
+      ...extra,
+      rows,
+    }
+  );
+  rankingCatalog.push({ file: filename, title, rows: rows.length, sort });
+}
+
+// B級の刺客: B1/B2、3〜6コース1着率が本人級別基準より高い順。
+{
+  const rows = [];
+  for (const racer of racers) {
+    const regno = Number(racer.regno);
+    const grade = gradeOf(regno);
+    if (!["B1", "B2"].includes(grade)) continue;
+
+    const coursesWanted = [3,4,5,6];
+    const a = aggregateRacer(regno, coursesWanted);
+    if (!a.starts) continue;
+
+    const baselineRate = weightedBaselinePct(
+      grade, coursesWanted, "win_rate", regno
+    );
+    if (baselineRate == null) continue;
+
+    const rawRate = ratePct(a.wins, a.starts);
+    const adjRate = shrinkRatePct(a.wins, a.starts, baselineRate);
+
+    rows.push({
+      ...baseEntry(racer, a),
+      courses: coursesWanted,
+      wins: a.wins,
+      rawRate: pct(rawRate),
+      adjRate: pct(adjRate),
+      baselineRate: pct(baselineRate),
+      diffPtAdjusted: pct(adjRate - baselineRate),
+    });
+  }
+  rows.sort((a,b) =>
+    Number(b.diffPtAdjusted) - Number(a.diffPtAdjusted) ||
+    Number(b.adjRate) - Number(a.adjRate) ||
+    Number(b.n) - Number(a.n)
+  );
+  await writeRanking(
+    "ranking_b_attackers.json",
+    "B級の刺客",
+    rows,
+    "diffPtAdjusted_desc",
+    { grades: ["B1","B2"], courses: [3,4,5,6], metric: "win_rate" }
+  );
+}
+
+// 級別ごとの主要ランキング。
+for (const grade of GRADES) {
+  const gradeRacers = racers.filter((r) => gradeOf(Number(r.regno)) === grade);
+
+  // まくり職人 / 差し名人
+  for (const kind of [
+    { name: "まくり", slug: "makuri", title: "まくり職人" },
+    { name: "差し", slug: "sashi", title: "差し名人" },
+  ]) {
+    const rows = [];
+    for (const racer of gradeRacers) {
+      const regno = Number(racer.regno);
+      const coursesWanted = [1,2,3,4,5,6];
+      const a = aggregateRacer(regno, coursesWanted);
+      if (!a.starts) continue;
+
+      const count = a.kimarite[kind.name];
+      const baselineRate = weightedKimariteBaselinePct(
+        grade, coursesWanted, kind.name, regno
+      );
+      if (baselineRate == null) continue;
+
+      const rawRate = ratePct(count, a.starts);
+      const adjRate = shrinkRatePct(count, a.starts, baselineRate);
+
+      rows.push({
+        ...baseEntry(racer, a),
+        count,
+        kimarite: kind.name,
+        rawRate: pct(rawRate),
+        adjRate: pct(adjRate),
+        baselineRate: pct(baselineRate),
+        diffPtAdjusted: pct(adjRate - baselineRate),
+      });
+    }
+    rows.sort(sortDescAdjusted);
+    await writeRanking(
+      `ranking_${kind.slug}_${grade}.json`,
+      `${grade} ${kind.title}`,
+      rows,
+      "adjRate_desc",
+      { grade, kimarite: kind.name, metric: "kimarite_win_rate_per_start" }
+    );
+  }
+
+  // イン最強 / イン不安定 = 1コース逃げ率
+  {
+    const strong = [];
+    for (const racer of gradeRacers) {
+      const regno = Number(racer.regno);
+      const a = aggregateRacer(regno, [1]);
+      if (!a.starts) continue;
+
+      const count = a.kimarite["逃げ"];
+      const baselineRate =
+        baselineJson.grade_course[grade]["1"]
+          .kimarite_win_rate_per_start["逃げ"];
+
+      const rawRate = ratePct(count, a.starts);
+      const adjRate = shrinkRatePct(count, a.starts, baselineRate);
+
+      strong.push({
+        ...baseEntry(racer, a),
+        count,
+        course: 1,
+        kimarite: "逃げ",
+        rawRate: pct(rawRate),
+        adjRate: pct(adjRate),
+        baselineRate: pct(baselineRate),
+        diffPtAdjusted: pct(adjRate - baselineRate),
+      });
+    }
+
+    const unstable = strong.map((x) => ({...x}));
+    strong.sort(sortDescAdjusted);
+    unstable.sort(sortAscAdjusted);
+
+    await writeRanking(
+      `ranking_in_strong_${grade}.json`,
+      `${grade} イン最強`,
+      strong,
+      "adjRate_desc",
+      { grade, course: 1, metric: "nige_win_rate_per_start" }
+    );
+    await writeRanking(
+      `ranking_in_unstable_${grade}.json`,
+      `${grade} イン不安定`,
+      unstable,
+      "adjRate_asc",
+      { grade, course: 1, metric: "nige_win_rate_per_start" }
+    );
+  }
+
+  // ダッシュ巧者 = 4〜6コース3連対率
+  {
+    const rows = [];
+    for (const racer of gradeRacers) {
+      const regno = Number(racer.regno);
+      const coursesWanted = [4,5,6];
+      const a = aggregateRacer(regno, coursesWanted);
+      if (!a.starts) continue;
+
+      const baselineRate = weightedBaselinePct(
+        grade, coursesWanted, "ren3_rate", regno
+      );
+      if (baselineRate == null) continue;
+
+      const rawRate = ratePct(a.ren3, a.starts);
+      const adjRate = shrinkRatePct(a.ren3, a.starts, baselineRate);
+
+      rows.push({
+        ...baseEntry(racer, a),
+        courses: coursesWanted,
+        ren3: a.ren3,
+        rawRate: pct(rawRate),
+        adjRate: pct(adjRate),
+        baselineRate: pct(baselineRate),
+        diffPtAdjusted: pct(adjRate - baselineRate),
+      });
+    }
+    rows.sort(sortDescAdjusted);
+    await writeRanking(
+      `ranking_dash_${grade}.json`,
+      `${grade} ダッシュ巧者`,
+      rows,
+      "adjRate_desc",
+      { grade, courses: [4,5,6], metric: "ren3_rate" }
+    );
+  }
+
+  // スタート巧者 = Fなし版 + 全員版
+  {
+    const allRows = [];
+    for (const racer of gradeRacers) {
+      const regno = Number(racer.regno);
+      const coursesWanted = [1,2,3,4,5,6];
+      const a = aggregateRacer(regno, coursesWanted);
+      if (!a.validStN) continue;
+
+      const baselineMean = weightedStBaseline(grade, coursesWanted, regno);
+      if (baselineMean == null) continue;
+
+      const rawSt = a.stSum / a.validStN;
+      const adjustedSt = shrinkMean(
+        a.stSum, a.validStN, baselineMean, SHRINK_K
+      );
+
+      allRows.push({
+        ...baseEntry(racer, a),
+        n: a.validStN,
+        total_starts: a.starts,
+        avgSt: st(rawSt),
+        adjustedSt: st(adjustedSt),
+        baselineAvgSt: st(baselineMean),
+        diffAdjusted: st(adjustedSt - baselineMean),
+        f_count: a.fCount,
+        l_count: a.lCount,
+      });
+    }
+
+    allRows.sort((a,b) =>
+      Number(a.adjustedSt) - Number(b.adjustedSt) ||
+      Number(a.avgSt) - Number(b.avgSt) ||
+      Number(b.n) - Number(a.n)
+    );
+
+    const noF = allRows.filter((x) => Number(x.f_count) === 0);
+
+    await writeRanking(
+      `ranking_start_${grade}.json`,
+      `${grade} スタート巧者`,
+      allRows,
+      "adjustedSt_asc",
+      { grade, metric: "avg_st", f_filter: "all" }
+    );
+    await writeRanking(
+      `ranking_start_no_f_${grade}.json`,
+      `${grade} スタート巧者（Fなし）`,
+      noF,
+      "adjustedSt_asc",
+      { grade, metric: "avg_st", f_filter: "f_count_zero" }
+    );
+  }
+}
+
+await writeJson(
+  resolve(OUT_DIR, "index", "ranking_catalog.json"),
+  {
+    schema_version: 1,
+    generated_at: generatedAt,
+    default_min_n: 30,
+    files: rankingCatalog,
+  }
+);
+
+console.log(`reverse_index_files=${reverseFileCount}`);
+console.log(`ranking_files=${rankingCatalog.length}`);
 
 await writeJson(resolve(OUT_DIR, "index.json"), index);
 await writeJson(resolve(OUT_DIR, "metadata.json"), {

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * WAKE辞典 v1 validation
+ * WAKE辞典 v1.4 validation
  *
  * Global checks:
  *  - racer course n sum == racer total starts
@@ -17,6 +17,11 @@
  * The script compares aggregate-view course results with an independent recomputation
  * from wake_dictionary_base_24m_v1 row data for those racers.
  */
+
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
+
+const OUT_DIR = resolve(process.env.WAKE_DICTIONARY_OUT_DIR || "public/data");
 
 const RAW_SUPABASE_URL = String(process.env.SUPABASE_URL || "").trim();
 const SUPABASE_URL = RAW_SUPABASE_URL
@@ -168,6 +173,82 @@ if (verify.some(([,v]) => !v)) {
     if (!ok) failed=true;
   }
 }
+
+
+// 5) generated reverse/ranking JSON checks
+async function readJson(path) {
+  return JSON.parse(await readFile(resolve(OUT_DIR, path), "utf8"));
+}
+function isSortedDesc(rows, key) {
+  for (let i = 1; i < rows.length; i++) {
+    if (Number(rows[i-1][key]) < Number(rows[i][key]) - 1e-12) return false;
+  }
+  return true;
+}
+function isSortedAsc(rows, key) {
+  for (let i = 1; i < rows.length; i++) {
+    if (Number(rows[i-1][key]) > Number(rows[i][key]) + 1e-12) return false;
+  }
+  return true;
+}
+
+try {
+  const reverseCatalog = await readJson("index/reverse_catalog.json");
+  const rankingCatalog = await readJson("index/ranking_catalog.json");
+  const baselines = await readJson("meta/baselines.json");
+
+  const reverseCountOk = reverseCatalog.files.length === 6 * 6 * 5;
+  console.log(`[5] reverse index files=${reverseCatalog.files.length} expected=180 ${reverseCountOk?"PASS":"FAIL"}`);
+  if (!reverseCountOk) failed = true;
+
+  const baselineScopesOk = ["ALL","A1","A2","B1","B2"].every(
+    (g) => baselines.grade_course?.[g] &&
+      ["1","2","3","4","5","6"].every((c) => baselines.grade_course[g][c])
+  );
+  console.log(`[5] baseline grade×course matrix ${baselineScopesOk?"PASS":"FAIL"}`);
+  if (!baselineScopesOk) failed = true;
+
+  // Check every reverse file is adjusted-rate descending and has explicit n/raw/adjusted.
+  let badReverse = 0;
+  for (const item of reverseCatalog.files) {
+    const f = await readJson(`index/${item.file}`);
+    const rows = Array.isArray(f.rows) ? f.rows : [];
+    const sorted = isSortedDesc(rows, "adjRate");
+    const schemaOk = rows.every((r) =>
+      Number.isFinite(Number(r.n)) &&
+      Number.isFinite(Number(r.rawRate)) &&
+      Number.isFinite(Number(r.adjRate))
+    );
+    if (!sorted || !schemaOk) badReverse++;
+  }
+  console.log(`[5] reverse files sorted/schema: ${badReverse===0?"PASS":"FAIL"} bad=${badReverse}`);
+  if (badReverse) failed = true;
+
+  // Check ranking files according to declared sort.
+  let badRanking = 0;
+  for (const item of rankingCatalog.files) {
+    const f = await readJson(`index/${item.file}`);
+    const rows = Array.isArray(f.rows) ? f.rows : [];
+    let sorted = true;
+    if (item.sort === "adjRate_desc") sorted = isSortedDesc(rows, "adjRate");
+    else if (item.sort === "adjRate_asc") sorted = isSortedAsc(rows, "adjRate");
+    else if (item.sort === "adjustedSt_asc") sorted = isSortedAsc(rows, "adjustedSt");
+    else if (item.sort === "diffPtAdjusted_desc") sorted = isSortedDesc(rows, "diffPtAdjusted");
+    if (!sorted) badRanking++;
+  }
+  console.log(`[5] ranking files sorted: ${badRanking===0?"PASS":"FAIL"} bad=${badRanking}`);
+  if (badRanking) failed = true;
+
+  const bAttackers = await readJson("index/ranking_b_attackers.json");
+  const bGradeOk = bAttackers.rows.every((r) => r.grade === "B1" || r.grade === "B2");
+  console.log(`[5] B級の刺客 grade filter: ${bGradeOk?"PASS":"FAIL"} rows=${bAttackers.rows.length}`);
+  if (!bGradeOk) failed = true;
+
+} catch (e) {
+  console.log(`[5] generated index validation FAIL: ${e.message || e}`);
+  failed = true;
+}
+
 
 if (failed) {
   console.error("WAKE dictionary validation FAILED");
