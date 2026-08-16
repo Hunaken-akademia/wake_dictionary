@@ -1,4 +1,4 @@
-name: Build WAKE Dictionary JSON
+name: Build and Deploy WAKE Dictionary
 
 on:
   workflow_dispatch:
@@ -6,25 +6,33 @@ on:
     # JST 04:30 = UTC 19:30 (previous day)
     - cron: "30 19 * * *"
 
+concurrency:
+  group: wake-dictionary-production
+  cancel-in-progress: false
+
 jobs:
-  build:
+  build-and-deploy:
     runs-on: ubuntu-latest
     permissions:
       contents: read
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
         with:
           node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
 
       - name: Refresh racer grade and branch
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-          RACER_PROFILE_FRESH_DAYS: "7"
-          RACER_PROFILE_CONCURRENCY: "4"
         run: node scripts/collect_racer_profiles.mjs
 
       - name: Generate static JSON
@@ -41,8 +49,55 @@ jobs:
           VERIFY_A1_REGNO: ${{ vars.VERIFY_A1_REGNO }}
           VERIFY_A2_REGNO: ${{ vars.VERIFY_A2_REGNO }}
           VERIFY_B1_REGNO: ${{ vars.VERIFY_B1_REGNO }}
+          WAKE_DICTIONARY_OUT_DIR: public/data
         run: node scripts/validate_wake_dictionary.mjs
 
-      # Vercel deployment is intentionally left to the repository's existing
-      # Vercel Git integration or a separate deployment job.
-      # The deployed site itself performs no Supabase access.
+      - name: Confirm generated data exists
+        shell: bash
+        run: |
+          test -f public/data/index.json
+          test -f public/data/meta/baselines.json
+          test -f public/data/index/reverse_catalog.json
+          test -f public/data/index/ranking_catalog.json
+          echo "public/data ready"
+          du -sh public/data
+          find public/data/racers -type f | wc -l
+
+      # VercelにGitHub Actions側で生成した public/data を含む作業ツリーを直接送る。
+      # public repoへJSONをcommitしないため、有料辞典のデータをGitHubへ残さない。
+      - name: Install Vercel CLI
+        run: npm install --global vercel@latest
+
+      - name: Link Vercel project
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: |
+          mkdir -p .vercel
+          printf '{"orgId":"%s","projectId":"%s"}\n' "$VERCEL_ORG_ID" "$VERCEL_PROJECT_ID" > .vercel/project.json
+          vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+
+      - name: Deploy production to Vercel
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          DEPLOY_URL="$(vercel deploy --prod --yes --token="$VERCEL_TOKEN")"
+          echo "Production deployment: $DEPLOY_URL"
+          echo "WAKE_DEPLOY_URL=$DEPLOY_URL" >> "$GITHUB_ENV"
+
+      - name: Verify deployed JSON
+        shell: bash
+        run: |
+          sleep 5
+          curl --fail --silent --show-error --location \
+            "$WAKE_DEPLOY_URL/data/index.json" \
+            --output /tmp/index.json
+          node -e '
+            const fs=require("fs");
+            const x=JSON.parse(fs.readFileSync("/tmp/index.json","utf8"));
+            if (!Array.isArray(x) || x.length < 1000) {
+              throw new Error("deployed /data/index.json is invalid");
+            }
+            console.log(`deployed racers=${x.length}`);
+          '
