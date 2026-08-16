@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * WAKE辞典 v2.1 incremental cache refresher
+ * WAKE辞典 v2.3 incremental cache refresher
  *
  * First run: seeds all current racers once.
  * Later runs: refreshes only racers affected by
@@ -22,6 +22,7 @@ const COURSE_BATCH = Math.max(5, Number(process.env.WAKE_RACER_BATCH_SIZE || 50)
 const VENUE_BATCH = Math.max(5, Number(process.env.WAKE_VENUE_BATCH_SIZE || 50));
 const KIM_BATCH = Math.max(2, Number(process.env.WAKE_KIMARITE_BATCH_SIZE || 10));
 const DEF_BATCH = Math.max(2, Number(process.env.WAKE_DEFENSE_BATCH_SIZE || 20));
+const VENUE_COURSE_BATCH = Math.max(5, Number(process.env.WAKE_VENUE_COURSE_BATCH_SIZE || 25));
 
 if (!SUPABASE_URL || !SERVICE_KEY) {
   throw new Error("SUPABASE_URL / SUPABASE_SERVICE_KEY are required");
@@ -118,6 +119,40 @@ async function fetchBatched(resource, regnos, {select="*",order="regno.asc",batc
   return all;
 }
 
+
+async function rpc(functionName, payload = {}) {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/${functionName}`, {
+    method: "POST",
+    headers: {...headers, "Content-Type":"application/json"},
+    body: JSON.stringify(payload),
+  });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`${functionName} ${res.status}: ${text.slice(0,1000)}`);
+  const rows = text ? JSON.parse(text) : [];
+  if (!Array.isArray(rows)) throw new Error(`${functionName}: expected array`);
+  return rows;
+}
+
+async function fetchVenueCourseChunkAdaptive(ids) {
+  if (!ids.length) return [];
+  try {
+    return await rpc("wake_dictionary_venue_course_stats_for_racers_v1", {
+      p_regnos: ids,
+    });
+  } catch (e) {
+    if (!isTimeout(e) || ids.length <= 1) throw e;
+    const mid = Math.ceil(ids.length / 2);
+    const left = ids.slice(0, mid);
+    const right = ids.slice(mid);
+    console.warn(
+      `venue_course_rpc: timeout for ${ids.length}; split -> ${left.length}+${right.length}`
+    );
+    const a = await fetchVenueCourseChunkAdaptive(left);
+    const b = await fetchVenueCourseChunkAdaptive(right);
+    return [...a, ...b];
+  }
+}
+
 async function upsert(resource, rows, onConflict) {
   if(!rows.length) return;
   for(const batch of chunk(rows,50)){
@@ -163,6 +198,18 @@ const cacheMeta = await fetchRetry("wake_dictionary_incremental_cache_v1",{
   select:"regno,data_end,period_start_24m,defense_start_1y",
   order:"regno.asc"
 });
+let venueCourseCacheMeta;
+try {
+  venueCourseCacheMeta = await fetchRetry("wake_dictionary_venue_course_cache_v1",{
+    select:"regno,data_end,period_start_24m",
+    order:"regno.asc"
+  });
+} catch (e) {
+  if (String(e?.message || e).includes("PGRST205") || String(e?.message || e).includes("404")) {
+    throw new Error("wake_dictionary_venue_course_cache_v1 is not ready. Run sql/11_venue_course_cache.sql first.");
+  }
+  throw e;
+}
 const stateRows = await fetchRetry("wake_dictionary_incremental_state_v1",{
   filters:[["id","eq.1"]]
 });
@@ -177,10 +224,15 @@ const state=stateRows[0] || null;
 const currentRegnos=racers.map(r=>Number(r.regno)).filter(Number.isFinite);
 const currentSet=new Set(currentRegnos);
 const cachedSet=new Set(cacheMeta.map(r=>Number(r.regno)).filter(Number.isFinite));
+const venueCourseCachedSet=new Set(
+  venueCourseCacheMeta.map(r=>Number(r.regno)).filter(Number.isFinite)
+);
 const affected=new Set();
 let mode="DELTA";
 
-for(const r of currentRegnos) if(!cachedSet.has(r)) affected.add(r);
+for(const r of currentRegnos) {
+  if(!cachedSet.has(r) || !venueCourseCachedSet.has(r)) affected.add(r);
+}
 
 if(FORCE_FULL || !state?.last_data_end || !state?.period_start_24m || !state?.defense_start_1y){
   mode=FORCE_FULL?"FORCED_FULL":"FULL_SEED";
@@ -220,6 +272,7 @@ const ids=[...affected].sort((a,b)=>a-b);
 console.log(`cache_mode=${mode}`);
 console.log(`racer_total=${currentRegnos.length}`);
 console.log(`cache_existing=${cachedSet.size}`);
+console.log(`venue_course_cache_existing=${venueCourseCachedSet.size}`);
 console.log(`cache_refresh_racers=${ids.length}`);
 console.log(`cache_reuse_racers=${Math.max(0,currentRegnos.length-ids.length)}`);
 
@@ -260,6 +313,28 @@ if(ids.length){
     defense_start_1y:currentDefenseStart,
   }));
   await upsert("wake_dictionary_incremental_cache_v1",payload,"regno");
+
+  console.log("refresh venue×course×kimarite rows...");
+  const vcBatches = chunk(ids, VENUE_COURSE_BATCH);
+  for (let i = 0; i < vcBatches.length; i++) {
+    const batchIds = vcBatches[i];
+    const rows = await fetchVenueCourseChunkAdaptive(batchIds);
+    const grouped = groupBy(rows, "regno");
+    const nowVc = new Date().toISOString();
+
+    const payloadVc = batchIds.map((regno) => ({
+      regno,
+      rows: grouped.get(String(regno)) || [],
+      refreshed_at: nowVc,
+      data_end: currentEnd,
+      period_start_24m: currentStart,
+    }));
+
+    await upsert("wake_dictionary_venue_course_cache_v1", payloadVc, "regno");
+    console.log(
+      `venue_course_cache: batch ${i+1}/${vcBatches.length} racers=${batchIds.length} rows=${rows.length}`
+    );
+  }
 }
 
 // State is written only after every affected racer has been refreshed successfully.
@@ -273,4 +348,4 @@ await upsert("wake_dictionary_incremental_state_v1",[{
 }],"id");
 
 console.log(`cache_state_data_end=${currentEnd}`);
-console.log("WAKE dictionary incremental cache refresh complete");
+console.log("WAKE dictionary v2.3 incremental cache refresh complete");

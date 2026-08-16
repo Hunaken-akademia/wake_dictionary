@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * WAKE辞典 v2.1.1 validation
+ * WAKE辞典 v2.3 validation
  *
  * Global checks:
  *  - racer course n sum == racer total starts
@@ -339,24 +339,61 @@ try {
   const files = await sampleRacerFiles(resolve(OUT_DIR, "racers"));
   let badSufficient = 0;
   let badAlpha = 0;
+  let badRawDisplayData = 0;
+  let rawWinCellsChecked = 0;
+
   for (const file of files) {
     if (!file.endsWith(".json")) continue;
     const d = await readJson(`racers/${file}`);
+    const breakdownByCourse = new Map(
+      (d.win_kimarite_breakdown || []).map((c) => [Number(c.course), c])
+    );
+
     for (const c of d.win_kimarite_breakdown || []) {
       if (Boolean(c.sufficient) !== (Number(c.win_n) >= 20)) badSufficient++;
       if (Number(c.alpha) !== 30) badAlpha++;
     }
+
+    // v2.2: 1着が1回でもあるコースは、実測ドーナツを作れる完全な内訳が必要。
+    for (const course of d.course_stats || []) {
+      const winN = Number(course.finish_counts?.win || 0);
+      if (winN < 1) continue;
+      rawWinCellsChecked++;
+
+      const c = breakdownByCourse.get(Number(course.course));
+      if (!c || Number(c.win_n) !== winN) {
+        badRawDisplayData++;
+        continue;
+      }
+
+      const countSum = (c.items || []).reduce((s,x) => s + Number(x.count || 0), 0);
+      if (countSum !== winN) {
+        badRawDisplayData++;
+        continue;
+      }
+
+      for (const x of c.items || []) {
+        const expected = Math.round((100 * Number(x.count || 0) / winN) * 1000) / 1000;
+        const actual = Number(x.raw_rate);
+        if (!approx(actual, expected, 1e-12)) {
+          badRawDisplayData++;
+          break;
+        }
+      }
+    }
   }
-  console.log(`[6] kimarite detail min wins=20 ${badSufficient===0?"PASS":"FAIL"} bad=${badSufficient}`);
+
+  console.log(`[6] kimarite adjusted/insight min wins=20 ${badSufficient===0?"PASS":"FAIL"} bad=${badSufficient}`);
   console.log(`[6] kimarite detail alpha=30 ${badAlpha===0?"PASS":"FAIL"} bad=${badAlpha}`);
-  if (badSufficient || badAlpha) failed = true;
+  console.log(`[6] kimarite raw display from win_n>=1 ${badRawDisplayData===0?"PASS":"FAIL"} cells=${rawWinCellsChecked} bad=${badRawDisplayData}`);
+  if (badSufficient || badAlpha || badRawDisplayData) failed = true;
 } catch (e) {
   console.log(`[6] v1.8 generated data checks FAIL: ${e.message || e}`);
   failed = true;
 }
 
 
-// 7) v2.0.1 defense + insight checks
+// 7) v2.2 defense + insight checks
 // defense VIEWを再度全件SELECTすると同じstatement timeoutを再発させるため、
 // 実際にデプロイされる generated feature JSON を検証する。
 try {
@@ -421,7 +458,61 @@ try {
     failed = true;
   }
 } catch (e) {
-  console.log(`[7] v2.0.1 feature validation FAIL: ${e.message || e}`);
+  console.log(`[7] v2.2 feature validation FAIL: ${e.message || e}`);
+  failed = true;
+}
+
+
+// 8) v2.3 24場フィルターJSON
+try {
+  let loaded = 0;
+  let badRows = 0;
+  let badKimarite = 0;
+  let badBaselines = 0;
+
+  for (let placeNo = 1; placeNo <= 24; placeNo++) {
+    const d = await readJson(
+      `index/venue_${String(placeNo).padStart(2,"0")}.json`
+    );
+
+    if (Number(d.place_no) !== placeNo || !Array.isArray(d.racers)) {
+      badRows++;
+      continue;
+    }
+    loaded++;
+
+    for (const scope of ["ALL","A1","A2","B1","B2"]) {
+      for (let course = 1; course <= 6; course++) {
+        const b = d.baselines?.[scope]?.[String(course)];
+        if (!b || Number(b.n || 0) < 0) badBaselines++;
+      }
+    }
+
+    for (const racer of d.racers) {
+      for (const c of racer.courses || []) {
+        const n = Number(c.n || 0);
+        const winN = Number(c.win_n || 0);
+        const ren2 = Number(c.ren2_n || 0);
+        const ren3 = Number(c.ren3_n || 0);
+        const ksum = Object.values(c.kimarite || {})
+          .reduce((s,v) => s + Number(v || 0), 0);
+
+        if (n < 1 || winN < 0 || ren2 < winN || ren3 < ren2 || ren3 > n) {
+          badRows++;
+        }
+        if (ksum !== winN) badKimarite++;
+      }
+    }
+  }
+
+  console.log(`[8] venue filter files=24 ${loaded===24?"PASS":"FAIL"} loaded=${loaded}`);
+  console.log(`[8] venue row ranges ${badRows===0?"PASS":"FAIL"} bad=${badRows}`);
+  console.log(`[8] venue kimarite sum==wins ${badKimarite===0?"PASS":"FAIL"} bad=${badKimarite}`);
+  console.log(`[8] venue baselines ${badBaselines===0?"PASS":"FAIL"} bad=${badBaselines}`);
+
+  if (loaded !== 24 || badRows || badKimarite || badBaselines) failed = true;
+} catch (e) {
+  console.log(`[8] venue filter validation FAIL: ${e.message || e}`);
   failed = true;
 }
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * WAKE辞典 JSON exporter v2.1
+ * WAKE辞典 JSON exporter v2.3
  *
  * v1.5.4:
  *   - metadata / racers / profiles の初期取得も完全逐次化
@@ -219,6 +219,12 @@ const KIMARITE_KINDS = [
   { name: "恵まれ", slug: "megumare" },
 ];
 
+const PLACE_NAMES = {
+  1:"桐生",2:"戸田",3:"江戸川",4:"平和島",5:"多摩川",6:"浜名湖",7:"蒲郡",8:"常滑",
+  9:"津",10:"三国",11:"びわこ",12:"住之江",13:"尼崎",14:"鳴門",15:"丸亀",16:"児島",
+  17:"宮島",18:"徳山",19:"下関",20:"若松",21:"芦屋",22:"福岡",23:"唐津",24:"大村"
+};
+
 function safeDiv(num, den) {
   return den > 0 ? num / den : 0;
 }
@@ -349,6 +355,45 @@ if (missingCache.length) {
   );
 }
 console.log(`incremental_cache_racers=${currentCache.length}`);
+
+console.log("fetch venue×course incremental cache...");
+let venueCourseCacheRows;
+try {
+  venueCourseCacheRows = await fetchAllWithTimeoutRetry(
+    "wake_dictionary_venue_course_cache_v1",
+    {
+      select: "regno,rows,data_end,period_start_24m",
+      order: "regno.asc",
+    }
+  );
+} catch (e) {
+  const msg = String(e?.message || e);
+  if (msg.includes("PGRST205") || msg.includes("404")) {
+    throw new Error("wake_dictionary_venue_course_cache_v1 is not ready. Run sql/11_venue_course_cache.sql first.");
+  }
+  throw e;
+}
+
+const venueCourseCurrent = venueCourseCacheRows.filter((r) =>
+  currentRegnoSet.has(Number(r.regno))
+);
+const venueCourseCached = new Set(
+  venueCourseCurrent.map((r) => Number(r.regno))
+);
+const missingVenueCourse = racers
+  .map((r) => Number(r.regno))
+  .filter((regno) => !venueCourseCached.has(regno));
+
+if (missingVenueCourse.length) {
+  throw new Error(
+    `venue-course cache incomplete: missing=${missingVenueCourse.length} sample=${missingVenueCourse.slice(0,10).join(",")}. Run scripts/refresh_incremental_cache.mjs first.`
+  );
+}
+console.log(`venue_course_cache_racers=${venueCourseCurrent.length}`);
+
+const rawVenueCourseStats = venueCourseCurrent.flatMap((r) =>
+  Array.isArray(r.rows) ? r.rows : []
+);
 
 const rawCourseStats = currentCache.flatMap((r) =>
   Array.isArray(r.course_rows) ? r.course_rows : []
@@ -662,8 +707,13 @@ for (const racer of racers) {
       kimByCourse.set(c, {
         course: c,
         win_n: winN,
+        // UIでは実測構成比を1勝から表示する。
+        // sufficientは「補正構成比を特徴判定へ使う際の十分な勝利数」の意味。
+        displayable_raw_composition: winN >= 1,
         sufficient,
         alpha: KIMARITE_COMPOSITION_ALPHA,
+        minimum_wins_for_adjusted_insight: KIMARITE_COMPOSITION_MIN_WINS,
+        // 旧クライアント互換用
         minimum_wins_for_rate: KIMARITE_COMPOSITION_MIN_WINS,
         items: [],
       });
@@ -703,8 +753,9 @@ for (const racer of racers) {
     notes: {
       grade_branch_source: "wake_dictionary_racer_profile_v1 / BOATCAST_STR3",
       kana_source: "wake_dictionary_racer_kana_v1 / BOATRACE_OFFICIAL_PROFILE",
-      kimarite_meaning: "breakdown_of_how_the_racer_won; not an attacking-style rate",
-      kimarite_display_rule: "when sufficient=false (win_n<20), UI must hide rates and show counts only",
+      kimarite_meaning: "breakdown_of_how_the_racer_won; denominator is wins in that course",
+      kimarite_display_rule: "raw composition is displayable from win_n>=1; courses with starts but win_n=0 may show an empty state",
+      kimarite_adjusted_insight_rule: "adjusted/notable composition keeps minimum wins=20 and alpha=30",
       kimarite_composition_alpha: KIMARITE_COMPOSITION_ALPHA,
       refund_races: "valid completed races are retained; F/L ST is excluded from avg ST",
     },
@@ -805,6 +856,172 @@ for (const scope of GRADE_SCOPES) {
     baselineJson.grade_course[scope][String(course)] = obj;
   }
 }
+
+
+// ============================================================================
+// v2.3 24場フィルター用JSON
+// 場を選んだ時は、その場での過去24ヶ月のコース/決まり手raw値から
+// ブラウザ側で逆引き・ランキングを再計算する。
+// 24×大量ランキングJSONは作らず、1場1ファイルの24個だけ。
+// ============================================================================
+
+function venueKimCounts(row) {
+  return {
+    "逃げ": Number(row.nige_n || 0),
+    "差し": Number(row.sashi_n || 0),
+    "まくり": Number(row.makuri_n || 0),
+    "まくり差し": Number(row.makurizashi_n || 0),
+    "抜き": Number(row.nuki_n || 0),
+    "恵まれ": Number(row.megumare_n || 0),
+  };
+}
+
+function addVenueRawToAccumulator(acc, row) {
+  const starts = Number(row.n || 0);
+  const f = Number(row.f_count || 0);
+  const l = Number(row.l_count || 0);
+  const missing = Number(row.st_missing_count || 0);
+  const validStN = Math.max(0, starts - f - l - missing);
+  const avg = n(row.avg_st);
+
+  acc.starts += starts;
+  acc.wins += Number(row.win_n || 0);
+  acc.ren2 += Number(row.ren2_n || 0);
+  acc.ren3 += Number(row.ren3_n || 0);
+  acc.validStN += validStN;
+  if (avg != null) acc.stSum += avg * validStN;
+  acc.fCount += f;
+  acc.lCount += l;
+
+  const kc = venueKimCounts(row);
+  for (const kind of KIMARITE_KINDS) {
+    acc.kimarite[kind.name] += Number(kc[kind.name] || 0);
+  }
+}
+
+const venueBaselineAcc = new Map();
+for (let placeNo = 1; placeNo <= 24; placeNo++) {
+  for (const scope of GRADE_SCOPES) {
+    for (let course = 1; course <= 6; course++) {
+      venueBaselineAcc.set(
+        `${placeNo}|${scope}|${course}`,
+        makeAccumulator()
+      );
+    }
+  }
+}
+
+for (const row of rawVenueCourseStats) {
+  const placeNo = Number(row.place_no);
+  const course = Number(row.course);
+  const regno = Number(row.regno);
+  const grade = gradeOf(regno);
+  if (!(placeNo >= 1 && placeNo <= 24 && course >= 1 && course <= 6)) continue;
+
+  addVenueRawToAccumulator(
+    venueBaselineAcc.get(`${placeNo}|ALL|${course}`),
+    row
+  );
+  if (GRADES.includes(grade)) {
+    addVenueRawToAccumulator(
+      venueBaselineAcc.get(`${placeNo}|${grade}|${course}`),
+      row
+    );
+  }
+}
+
+const venueRowsByPlace = new Map(
+  Array.from({length:24}, (_,i) => [i+1, []])
+);
+for (const row of rawVenueCourseStats) {
+  const p = Number(row.place_no);
+  if (venueRowsByPlace.has(p)) venueRowsByPlace.get(p).push(row);
+}
+
+await mkdir(resolve(OUT_DIR, "index"), { recursive: true });
+
+for (let placeNo = 1; placeNo <= 24; placeNo++) {
+  const baselines = {};
+
+  for (const scope of GRADE_SCOPES) {
+    baselines[scope] = {};
+    for (let course = 1; course <= 6; course++) {
+      const a = venueBaselineAcc.get(`${placeNo}|${scope}|${course}`);
+      const b = {
+        n: a.starts,
+        win_rate: pct(ratePct(a.wins, a.starts)),
+        ren2_rate: pct(ratePct(a.ren2, a.starts)),
+        ren3_rate: pct(ratePct(a.ren3, a.starts)),
+        avg_st: a.validStN ? st(a.stSum / a.validStN) : null,
+        valid_st_n: a.validStN,
+        kimarite_win_rate_per_start: {},
+      };
+      for (const kind of KIMARITE_KINDS) {
+        b.kimarite_win_rate_per_start[kind.name] = pct(
+          ratePct(a.kimarite[kind.name], a.starts)
+        );
+      }
+      baselines[scope][String(course)] = b;
+    }
+  }
+
+  const racerMap = new Map();
+  for (const row of venueRowsByPlace.get(placeNo) || []) {
+    const regno = Number(row.regno);
+    if (!racerMap.has(regno)) {
+      const baseRacer = racers.find((r) => Number(r.regno) === regno);
+      racerMap.set(regno, {
+        regno,
+        name: baseRacer?.racer_name || "",
+        grade: gradeOf(regno),
+        branch: branchOf(regno),
+        courses: [],
+      });
+    }
+
+    racerMap.get(regno).courses.push({
+      course: Number(row.course),
+      n: Number(row.n || 0),
+      win_n: Number(row.win_n || 0),
+      ren2_n: Number(row.ren2_n || 0),
+      ren3_n: Number(row.ren3_n || 0),
+      avg_st: st(row.avg_st),
+      f_count: Number(row.f_count || 0),
+      l_count: Number(row.l_count || 0),
+      st_missing_count: Number(row.st_missing_count || 0),
+      kimarite: venueKimCounts(row),
+    });
+  }
+
+  const venueRacers = [...racerMap.values()]
+    .map((r) => ({
+      ...r,
+      courses: r.courses.sort((a,b) => a.course - b.course),
+    }))
+    .sort((a,b) => a.regno - b.regno);
+
+  await writeJson(
+    resolve(
+      OUT_DIR,
+      "index",
+      `venue_${String(placeNo).padStart(2,"0")}.json`
+    ),
+    {
+      schema_version: 1,
+      generated_at: generatedAt,
+      data_period: period,
+      place_no: placeNo,
+      place_name: PLACE_NAMES[placeNo],
+      shrinkage_k: SHRINK_K,
+      baselines,
+      racers: venueRacers,
+    }
+  );
+}
+
+console.log("venue_filter_files=24");
+console.log(`venue_course_rows(cache)=${rawVenueCourseStats.length}`);
+
 
 await writeJson(resolve(OUT_DIR, "meta", "baselines.json"), baselineJson);
 
@@ -1417,6 +1634,9 @@ function defensePayload(regno) {
       start: rows[0]?.period_start || null,
       end: rows[0]?.period_end || null,
     },
+    display_minimum_events: 1,
+    reference_threshold: 8,
+    // 旧クライアント互換用。sufficient=trueになる閾値。
     minimum_events: 8,
     baseline_method: "national_average_weighted_to_the_racers_victim_course_mix",
     makurare: null,

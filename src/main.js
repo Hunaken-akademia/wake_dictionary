@@ -10,6 +10,8 @@ const state = {
   todayOnly: localStorage.getItem("wake_today_only") === "1",
   todayMeta: null,
   todayByRegno: new Map(),
+  reverseVenue: localStorage.getItem("wake_reverse_venue") || "ALL",
+  rankingVenue: localStorage.getItem("wake_ranking_venue") || "ALL",
 };
 
 const KIMARITE = [
@@ -58,8 +60,9 @@ const GUIDE_ITEMS = [
   ["決まり手", "1着になったレースの勝ち方。逃げ・差し・まくり・まくり差し・抜き・恵まれの6種類を扱います。"],
   ["意外な一面", "選手の成績から、母数を考慮した補正後でも目立つ偏りを最大3件まで自動抽出します。低母数の偶然を特徴として出さないため、この判定だけは補正OFF時でも補正値を使用します。"],
   ["まくられ耐性", "自分より外の選手が「まくり」で1着になった時に、自分が何着まで残したかを見る直近1年の実測データです。"],
-  ["差され耐性", "自分より外の選手が「差し」で1着になった時に、自分が何着まで残したかを見る直近1年の実測データです。8件未満はデータ不足扱いにします。"],
-  ["本日出走のみ", "本日レースに出走予定の選手だけに絞る機能です。選手検索・逆引き検索・ランキングで利用できます。出走予定は毎日の自動更新時にBOATCASTの当日出走表から取得します。"],
+  ["差され耐性", "自分より外の選手が「差し」で1着になった時に、自分が何着まで残したかを見る直近1年の実測データです。1件から表示し、8件未満は参考値として明示します。"],
+  ["本日出走のみ", "本日レースに出走予定の選手だけに絞る機能です。場フィルターと組み合わせると、その場に本日出走する選手だけに絞ります。"],
+  ["場フィルター", "選択した場での過去成績だけを使って逆引き・ランキングを作り直します。本日出走のみON時は、本日開催している場だけを選べます。"],
 ];
 
 const $ = (s, root = document) => root.querySelector(s);
@@ -139,9 +142,101 @@ function bindTodayToggle(onChange) {
   });
 }
 
-function keepToday(rows) {
+function todayActivePlaces() {
+  const metaPlaces = Array.isArray(state.todayMeta?.places)
+    ? state.todayMeta.places.map(Number).filter((p) => p >= 1 && p <= 24)
+    : [];
+  if (metaPlaces.length) {
+    return [...new Set(metaPlaces)].sort((a,b)=>a-b);
+  }
+
+  const set = new Set();
+  for (const row of state.todayMeta?.racers || []) {
+    for (const e of row.entries || []) {
+      const p = Number(e.place_no);
+      if (p >= 1 && p <= 24) set.add(p);
+    }
+  }
+  return [...set].sort((a,b)=>a-b);
+}
+
+function todayAtPlace(regno, placeNo = "ALL") {
+  if (placeNo === "ALL" || placeNo == null) {
+    return state.todayByRegno.has(Number(regno));
+  }
+  const row = todayEntry(regno);
+  return Boolean(
+    row?.entries?.some((e) => Number(e.place_no) === Number(placeNo))
+  );
+}
+
+function keepToday(rows, placeNo = "ALL") {
   if (!state.todayOnly) return rows;
-  return rows.filter((r) => state.todayByRegno.has(Number(r.regno)));
+  return rows.filter((r) => todayAtPlace(r.regno, placeNo));
+}
+
+function venueOptions({mode="reverse", selected="ALL"} = {}) {
+  const active = todayActivePlaces();
+  let places;
+
+  if (mode === "ranking") {
+    // ランキングの場指定は「本日開催場」だけ。
+    places = active.length
+      ? active
+      : Array.from({length:24}, (_,i)=>i+1);
+  } else {
+    // 逆引きは通常24場。本日出走ON時だけ本日開催場へ限定。
+    places = state.todayOnly && active.length
+      ? active
+      : Array.from({length:24}, (_,i)=>i+1);
+  }
+
+  const allowed = new Set(places.map(String));
+  const safe = selected === "ALL" || allowed.has(String(selected))
+    ? String(selected)
+    : "ALL";
+
+  const allLabel = state.todayOnly && active.length
+    ? "本日開催 全場"
+    : "全場";
+
+  return {
+    selected: safe,
+    html: [
+      `<option value="ALL" ${safe==="ALL"?"selected":""}>${allLabel}</option>`,
+      ...places.map((p) =>
+        `<option value="${p}" ${safe===String(p)?"selected":""}>${placeNames[p]}</option>`
+      ),
+    ].join(""),
+  };
+}
+
+function venueDataPath(placeNo) {
+  return `${DATA_ROOT}/index/venue_${String(Number(placeNo)).padStart(2,"0")}.json`;
+}
+
+function ratePctClient(count, total) {
+  return Number(total) > 0
+    ? 100 * Number(count || 0) / Number(total)
+    : 0;
+}
+
+function shrinkRatePctClient(count, total, baselinePct, k=15) {
+  const totalN = Number(total || 0);
+  const b = Number(baselinePct);
+  if (!Number.isFinite(b) || totalN < 0) return null;
+  return 100 * (
+    Number(count || 0) + Number(k) * (b / 100)
+  ) / (totalN + Number(k));
+}
+
+function shrinkMeanClient(sum, total, baselineMean, k=15) {
+  const totalN = Number(total || 0);
+  const b = Number(baselineMean);
+  if (!Number.isFinite(b) || totalN <= 0) return null;
+  return (
+    Number(sum || 0) + Number(k) * b
+  ) / (totalN + Number(k));
 }
 
 async function getJson(path) {
@@ -475,6 +570,10 @@ function reverseFilters() {
           <select id="grade"><option value="ALL">全国</option><option>A1</option><option>A2</option><option>B1</option><option>B2</option></select>
         </div>
         <div class="field">
+          <label>場 <button class="mini-help" data-guide-open type="button">?</button></label>
+          <select id="reverseVenue">${venueOptions({mode:"reverse",selected:state.reverseVenue}).html}</select>
+        </div>
+        <div class="field">
           <label>最低走数 <button class="mini-help" data-guide-open type="button">?</button></label>
           <input id="minN" type="number" min="1" value="30" />
         </div>
@@ -514,20 +613,89 @@ function sortReverseRows(rows) {
   return out;
 }
 
+
+function buildVenueReverseRows(data, course, kimariteName, gradeScope) {
+  const baseline = data?.baselines?.[gradeScope]?.[String(course)];
+  const baselineRate = Number(
+    baseline?.kimarite_win_rate_per_start?.[kimariteName]
+  );
+  if (!Number.isFinite(baselineRate)) return [];
+
+  const rows = [];
+  for (const racer of data?.racers || []) {
+    if (gradeScope !== "ALL" && racer.grade !== gradeScope) continue;
+    const c = (racer.courses || [])
+      .find((x) => Number(x.course) === Number(course));
+    if (!c || Number(c.n || 0) < 1) continue;
+
+    const n = Number(c.n || 0);
+    const count = Number(c.kimarite?.[kimariteName] || 0);
+    const rawRate = ratePctClient(count, n);
+    const adjRate = shrinkRatePctClient(
+      count, n, baselineRate, Number(data.shrinkage_k || 15)
+    );
+
+    rows.push({
+      regno:Number(racer.regno),
+      name:racer.name || "",
+      grade:racer.grade || null,
+      branch:racer.branch || null,
+      course:Number(course),
+      kimarite:kimariteName,
+      n,
+      count,
+      rawRate,
+      adjRate,
+      baselineRate,
+      diffPtAdjusted:Number(adjRate) - baselineRate,
+    });
+  }
+  return rows;
+}
+
 async function loadReverse() {
   const c = Number($("#course").value);
   const slug = $("#kimarite").value;
   const name = $("#kimarite").selectedOptions[0].dataset.name;
   const grade = $("#grade").value;
   const minN = Math.max(1, Number($("#minN").value || 30));
+  const placeValue = $("#reverseVenue")?.value || "ALL";
+  const placeNo = placeValue === "ALL" ? "ALL" : Number(placeValue);
   const box = $("#reverseResult");
+
+  state.reverseVenue = String(placeValue);
+  localStorage.setItem("wake_reverse_venue", state.reverseVenue);
 
   box.innerHTML = `<div class="empty">読み込み中…</div>`;
 
   try {
-    const data = await getJson(`${DATA_ROOT}/index/reverse_course${c}_${slug}_${grade}.json`);
+    let data;
+    let sourceRows;
+
+    if (placeNo === "ALL") {
+      data = await getJson(
+        `${DATA_ROOT}/index/reverse_course${c}_${slug}_${grade}.json`
+      );
+      sourceRows = data.rows || [];
+    } else {
+      const venueData = await getJson(venueDataPath(placeNo));
+      data = {
+        ...venueData,
+        course:c,
+        kimarite:name,
+        grade,
+        sort:"adjRate_desc",
+      };
+      sourceRows = buildVenueReverseRows(
+        venueData, c, name, grade
+      );
+    }
+
     const rows = sortReverseRows(
-      keepToday((data.rows || []).filter((r) => Number(r.n) >= minN))
+      keepToday(
+        sourceRows.filter((r) => Number(r.n) >= minN),
+        placeNo
+      )
     );
 
     if (!rows.length) {
@@ -604,6 +772,12 @@ async function renderReverse() {
     timer = setTimeout(loadReverse, 180);
   });
 
+  $("#reverseVenue")?.addEventListener("change", () => {
+    state.reverseVenue = $("#reverseVenue")?.value || "ALL";
+    localStorage.setItem("wake_reverse_venue", state.reverseVenue);
+    loadReverse();
+  });
+
   bindTodayToggle(() => renderReverse());
   loadReverse();
 }
@@ -646,6 +820,10 @@ function rankingView() {
           <select id="rankingFile">${rankingDefs.map(([f,n])=>`<option value="${f}">${n}</option>`).join("")}</select>
         </div>
         <div class="field">
+          <label>場（本日開催）</label>
+          <select id="rankingVenue">${venueOptions({mode:"ranking",selected:state.rankingVenue}).html}</select>
+        </div>
+        <div class="field">
           <label>最低走数</label>
           <input id="rankMinN" type="number" min="1" value="30">
         </div>
@@ -677,9 +855,12 @@ function updateRankingDescription() {
   const file = $("#rankingFile")?.value;
   const box = $("#rankingDescription");
   if (!box || !file) return;
+  const venueLabel =
+    $("#rankingVenue")?.selectedOptions?.[0]?.textContent || "全場";
   box.innerHTML = `
     <strong>${esc($("#rankingFile").selectedOptions[0]?.textContent || "")}</strong>
     <span>${esc(RANKING_DESCRIPTIONS[file] || "選手データを指定条件で比較するランキングです。")}</span>
+    <span class="ranking-venue-context">集計場：${esc(venueLabel)}</span>
   `;
 }
 
@@ -735,17 +916,287 @@ function sortRankingRows(rows, data) {
   return out;
 }
 
+
+function venueCourseMap(racer) {
+  return new Map(
+    (racer?.courses || []).map((c) => [Number(c.course), c])
+  );
+}
+
+function aggregateVenueRacer(racer, coursesWanted) {
+  const map = venueCourseMap(racer);
+  const acc = {
+    starts:0, wins:0, ren2:0, ren3:0,
+    validStN:0, stSum:0, fCount:0, lCount:0,
+    kimarite:Object.fromEntries(KIMARITE.map(([name]) => [name,0])),
+  };
+
+  for (const course of coursesWanted) {
+    const row = map.get(Number(course));
+    if (!row) continue;
+
+    const starts = Number(row.n || 0);
+    const f = Number(row.f_count || 0);
+    const l = Number(row.l_count || 0);
+    const missing = Number(row.st_missing_count || 0);
+    const valid = Math.max(0, starts - f - l - missing);
+    const avg = Number(row.avg_st);
+
+    acc.starts += starts;
+    acc.wins += Number(row.win_n || 0);
+    acc.ren2 += Number(row.ren2_n || 0);
+    acc.ren3 += Number(row.ren3_n || 0);
+    acc.validStN += valid;
+    if (valid && Number.isFinite(avg)) acc.stSum += avg * valid;
+    acc.fCount += f;
+    acc.lCount += l;
+
+    for (const [name] of KIMARITE) {
+      acc.kimarite[name] += Number(row.kimarite?.[name] || 0);
+    }
+  }
+  return acc;
+}
+
+function weightedVenueBaseline(data, scope, racer, courses, key) {
+  const map = venueCourseMap(racer);
+  let weighted = 0;
+  let total = 0;
+
+  for (const course of courses) {
+    const row = map.get(Number(course));
+    const n = Number(row?.n || 0);
+    const b = data?.baselines?.[scope]?.[String(course)]?.[key];
+    if (!n || b == null || !Number.isFinite(Number(b))) continue;
+    weighted += n * Number(b);
+    total += n;
+  }
+  return total ? weighted / total : null;
+}
+
+function weightedVenueKimariteBaseline(data, scope, racer, courses, kimarite) {
+  const map = venueCourseMap(racer);
+  let weighted = 0;
+  let total = 0;
+
+  for (const course of courses) {
+    const row = map.get(Number(course));
+    const n = Number(row?.n || 0);
+    const b = data?.baselines?.[scope]?.[String(course)]
+      ?.kimarite_win_rate_per_start?.[kimarite];
+    if (!n || b == null || !Number.isFinite(Number(b))) continue;
+    weighted += n * Number(b);
+    total += n;
+  }
+  return total ? weighted / total : null;
+}
+
+function weightedVenueStBaseline(data, scope, racer, courses) {
+  const map = venueCourseMap(racer);
+  let weighted = 0;
+  let total = 0;
+
+  for (const course of courses) {
+    const row = map.get(Number(course));
+    if (!row) continue;
+    const starts = Number(row.n || 0);
+    const valid = Math.max(
+      0,
+      starts
+        - Number(row.f_count || 0)
+        - Number(row.l_count || 0)
+        - Number(row.st_missing_count || 0)
+    );
+    const b = data?.baselines?.[scope]?.[String(course)]?.avg_st;
+    if (!valid || b == null || !Number.isFinite(Number(b))) continue;
+    weighted += valid * Number(b);
+    total += valid;
+  }
+  return total ? weighted / total : null;
+}
+
+function buildVenueRankingData(data, file) {
+  const racers = data?.racers || [];
+  const shrinkK = Number(data?.shrinkage_k || 15);
+
+  const rateRows = ({
+    grades, courses, baselineKey, kimarite, countFn,
+    metric, sort="adjRate_desc", title=""
+  }) => {
+    const rows = [];
+    for (const racer of racers) {
+      if (grades && !grades.includes(racer.grade)) continue;
+      const scope = racer.grade;
+      if (!["A1","A2","B1","B2"].includes(scope)) continue;
+
+      const acc = aggregateVenueRacer(racer, courses);
+      if (!acc.starts) continue;
+
+      const baselineRate = kimarite
+        ? weightedVenueKimariteBaseline(
+            data, scope, racer, courses, kimarite
+          )
+        : weightedVenueBaseline(
+            data, scope, racer, courses, baselineKey
+          );
+      if (baselineRate == null) continue;
+
+      const count = countFn(acc);
+      const rawRate = ratePctClient(count, acc.starts);
+      const adjRate = shrinkRatePctClient(
+        count, acc.starts, baselineRate, shrinkK
+      );
+
+      rows.push({
+        regno:Number(racer.regno),
+        name:racer.name || "",
+        grade:racer.grade || null,
+        branch:racer.branch || null,
+        n:acc.starts,
+        count,
+        rawRate,
+        adjRate,
+        baselineRate,
+        diffPtAdjusted:Number(adjRate) - Number(baselineRate),
+      });
+    }
+    return {rows, metric, kimarite, sort, title};
+  };
+
+  if (file === "ranking_b_attackers.json") {
+    const out = rateRows({
+      grades:["B1","B2"],
+      courses:[3,4,5,6],
+      baselineKey:"win_rate",
+      countFn:(a)=>a.wins,
+      metric:"win_rate",
+      sort:"diffPtAdjusted_desc",
+      title:"B級の伏兵",
+    });
+    out.rows = out.rows.filter(
+      (r) => Number(r.diffPtAdjusted) > 0
+    );
+    return out;
+  }
+
+  if (file === "ranking_makuri_B1.json") {
+    return rateRows({
+      grades:["B1"], courses:[1,2,3,4,5,6],
+      kimarite:"まくり", countFn:(a)=>a.kimarite["まくり"],
+      metric:"kimarite_win_rate_per_start",
+      title:"B1 まくり職人",
+    });
+  }
+
+  if (file === "ranking_sashi_B1.json") {
+    return rateRows({
+      grades:["B1"], courses:[1,2,3,4,5,6],
+      kimarite:"差し", countFn:(a)=>a.kimarite["差し"],
+      metric:"kimarite_win_rate_per_start",
+      title:"B1 差し名人",
+    });
+  }
+
+  if (file === "ranking_in_unstable_A1.json") {
+    return rateRows({
+      grades:["A1"], courses:[1],
+      kimarite:"逃げ", countFn:(a)=>a.kimarite["逃げ"],
+      metric:"nige_win_rate_per_start",
+      sort:"adjRate_asc",
+      title:"A1 イン不安定",
+    });
+  }
+
+  if (file === "ranking_dash_B1.json") {
+    return rateRows({
+      grades:["B1"], courses:[4,5,6],
+      baselineKey:"ren3_rate", countFn:(a)=>a.ren3,
+      metric:"ren3_rate",
+      title:"B1 ダッシュ巧者",
+    });
+  }
+
+  if (
+    file === "ranking_start_no_f_A1.json" ||
+    file === "ranking_start_no_f_B1.json"
+  ) {
+    const grade = file.includes("_A1") ? "A1" : "B1";
+    const rows = [];
+
+    for (const racer of racers) {
+      if (racer.grade !== grade) continue;
+
+      const courses = [1,2,3,4,5,6];
+      const acc = aggregateVenueRacer(racer, courses);
+      if (!acc.validStN || acc.fCount !== 0) continue;
+
+      const baselineAvgSt = weightedVenueStBaseline(
+        data, grade, racer, courses
+      );
+      if (baselineAvgSt == null) continue;
+
+      const avgSt = acc.stSum / acc.validStN;
+      const adjustedSt = shrinkMeanClient(
+        acc.stSum, acc.validStN, baselineAvgSt, shrinkK
+      );
+
+      rows.push({
+        regno:Number(racer.regno),
+        name:racer.name || "",
+        grade:racer.grade || null,
+        branch:racer.branch || null,
+        n:acc.validStN,
+        total_starts:acc.starts,
+        avgSt,
+        adjustedSt,
+        baselineAvgSt,
+        diffAdjusted:Number(adjustedSt)-Number(baselineAvgSt),
+        f_count:acc.fCount,
+        l_count:acc.lCount,
+      });
+    }
+
+    return {
+      rows,
+      metric:"avg_st",
+      sort:"adjustedSt_asc",
+      title:`${grade} スタート巧者（Fなし）`,
+      grade,
+      f_filter:"f_count_zero",
+    };
+  }
+
+  return {rows:[], metric:"", sort:"adjRate_desc", title:""};
+}
+
 async function loadRanking() {
   const file = $("#rankingFile").value;
   const minN = Math.max(1, Number($("#rankMinN").value || 30));
+  const placeValue = $("#rankingVenue")?.value || "ALL";
+  const placeNo = placeValue === "ALL" ? "ALL" : Number(placeValue);
   const box = $("#rankingResult");
+
+  state.rankingVenue = String(placeValue);
+  localStorage.setItem("wake_ranking_venue", state.rankingVenue);
 
   updateRankingDescription();
 
   try {
-    const data = await getJson(`${DATA_ROOT}/index/${file}`);
+    let data;
+    if (placeNo === "ALL") {
+      data = await getJson(`${DATA_ROOT}/index/${file}`);
+    } else {
+      const venueData = await getJson(venueDataPath(placeNo));
+      data = buildVenueRankingData(venueData, file);
+      data.place_no = placeNo;
+      data.place_name = venueData.place_name;
+    }
+
     const rows = sortRankingRows(
-      keepToday((data.rows || []).filter((r) => Number(r.n) >= minN)),
+      keepToday(
+        (data.rows || []).filter((r) => Number(r.n) >= minN),
+        placeNo
+      ),
       data
     );
     const isST = data.metric === "avg_st";
@@ -833,6 +1284,12 @@ async function renderRanking() {
     loadRanking();
   });
   $("#rankReload")?.addEventListener("click", loadRanking);
+  $("#rankingVenue")?.addEventListener("change", () => {
+    state.rankingVenue = $("#rankingVenue")?.value || "ALL";
+    localStorage.setItem("wake_ranking_venue", state.rankingVenue);
+    updateRankingDescription();
+    loadRanking();
+  });
 
   let timer = null;
   $("#rankMinN")?.addEventListener("input", () => {
@@ -880,48 +1337,124 @@ function courseCards(rows) {
   }).join("")}</div>`;
 }
 
-function kimariteTable(rows) {
-  const flat = [];
-  for (const c of rows || []) {
-    for (const x of c.items || []) {
-      flat.push({ course:c.course, win_n:c.win_n, sufficient:c.sufficient, ...x });
-    }
+const KIMARITE_COLORS = {
+  "逃げ": "#35e0d0",
+  "差し": "#4d8fff",
+  "まくり": "#78e3a8",
+  "まくり差し": "#21bfa8",
+  "抜き": "#f1c75b",
+  "恵まれ": "#8697aa",
+};
+
+const KIMARITE_ORDER = ["逃げ", "差し", "まくり", "まくり差し", "抜き", "恵まれ"];
+
+function kimariteDonutGradient(items, winN) {
+  if (!winN || !items?.length) {
+    return "conic-gradient(rgba(116,142,165,.18) 0deg 360deg)";
   }
 
-  if (!flat.length) return `<div class="empty">決まり手データなし</div>`;
+  const byName = new Map((items || []).map((x) => [String(x.kimarite), Number(x.count || 0)]));
+  let deg = 0;
+  const parts = [];
 
-  if (state.useAdjusted) {
-    return `
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>コース</th><th>勝利数</th><th>決まり手</th><th>回数</th><th>実測構成比</th><th>補正構成比</th><th>基準差</th></tr></thead>
-          <tbody>${flat.map((r)=>`
-            <tr>
-              <td>${r.course}</td><td>${r.win_n}</td><td>${esc(r.kimarite)}</td><td>${r.count}</td>
-              ${r.sufficient ? `
-                <td>${fmt(r.raw_rate)}%</td>
-                <td class="rate">${fmt(r.adjusted_rate)}%</td>
-                <td class="${Number(r.diff_pt_adjusted)>=0?"pos":"neg"}">${Number(r.diff_pt_adjusted)>=0?"+":""}${fmt(r.diff_pt_adjusted)}pt</td>
-              ` : `<td colspan="3" class="meta">勝利数20未満のため率は非表示</td>`}
-            </tr>`).join("")}
-          </tbody>
-        </table>
-      </div>`;
+  for (const name of KIMARITE_ORDER) {
+    const count = byName.get(name) || 0;
+    if (count <= 0) continue;
+    const next = deg + (count / winN) * 360;
+    parts.push(`${KIMARITE_COLORS[name] || "#8ea4b8"} ${deg.toFixed(3)}deg ${next.toFixed(3)}deg`);
+    deg = next;
   }
+
+  // 端数や未知の決まり手があってもリングに穴を作らない。
+  if (deg < 359.999) {
+    parts.push(`rgba(116,142,165,.18) ${deg.toFixed(3)}deg 360deg`);
+  }
+
+  return `conic-gradient(${parts.join(",")})`;
+}
+
+function kimariteDonuts(rows, courseStats) {
+  const breakdown = new Map(
+    (rows || []).map((c) => [Number(c.course), c])
+  );
+
+  // ユーザー要望: そのコースを1走でもしていればカード自体は表示。
+  const courses = [...(courseStats || [])]
+    .filter((c) => Number(c.n || 0) >= 1)
+    .sort((a,b) => Number(a.course) - Number(b.course));
+
+  if (!courses.length) return `<div class="empty">決まり手データなし</div>`;
 
   return `
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>コース</th><th>勝利数</th><th>決まり手</th><th>回数</th><th>実測構成比</th></tr></thead>
-        <tbody>${flat.map((r)=>`
-          <tr>
-            <td>${r.course}</td><td>${r.win_n}</td><td>${esc(r.kimarite)}</td><td>${r.count}</td>
-            ${r.sufficient
-              ? `<td class="rate">${fmt(r.raw_rate)}%</td>`
-              : `<td class="meta">勝利数20未満のため率は非表示</td>`}
-          </tr>`).join("")}
-        </tbody>
-      </table>
+    <div class="kimarite-donut-grid">
+      ${courses.map((courseRow) => {
+        const course = Number(courseRow.course);
+        const winN = Number(courseRow.finish_counts?.win || 0);
+        const row = breakdown.get(course);
+        const items = [...(row?.items || [])]
+          .filter((x) => Number(x.count || 0) > 0)
+          .sort((a,b) => {
+            const ai = KIMARITE_ORDER.indexOf(String(a.kimarite));
+            const bi = KIMARITE_ORDER.indexOf(String(b.kimarite));
+            return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi);
+          });
+
+        const gradient = kimariteDonutGradient(items, winN);
+
+        return `
+          <article class="kimarite-donut-card">
+            <div class="kimarite-card-head">
+              <div>
+                <strong>${course}コース</strong>
+                <div class="kimarite-sample">出走 n=${Number(courseRow.n || 0)} / <b>1着 n=${winN}</b></div>
+              </div>
+            </div>
+
+            <div class="kimarite-donut-body">
+              <div
+                class="kimarite-donut ${winN === 0 ? "is-empty" : ""}"
+                style="background:${gradient}"
+                role="img"
+                aria-label="${course}コース 1着${winN}回の決まり手構成"
+              >
+                <div class="kimarite-donut-hole">
+                  <span>1着</span>
+                  <b>n=${winN}</b>
+                </div>
+              </div>
+
+              <div class="kimarite-legend">
+                ${winN > 0 ? items.map((x) => {
+                  const count = Number(x.count || 0);
+                  const pctRaw = winN > 0 ? 100 * count / winN : 0;
+                  const color = KIMARITE_COLORS[String(x.kimarite)] || "#8ea4b8";
+                  return `
+                    <div class="kimarite-legend-row">
+                      <span class="kimarite-legend-name">
+                        <i style="background:${color}"></i>${esc(x.kimarite)}
+                      </span>
+                      <span class="kimarite-legend-value">
+                        <b>${count}回</b>
+                        <small>${fmt(pctRaw)}%</small>
+                      </span>
+                    </div>`;
+                }).join("") : `
+                  <div class="kimarite-no-win">
+                    <strong>勝利データなし</strong>
+                    <span>このコースでは集計期間内に1着がありません。</span>
+                  </div>
+                `}
+              </div>
+            </div>
+          </article>`;
+      }).join("")}
+    </div>
+
+    <div class="notice kimarite-note">
+      決まり手は<strong>そのコースで1着になったレース</strong>の勝ち方を集計しています。
+      1着が1回でもあれば構成比を表示し、分母は各カードの「1着 n」で確認できます。
+      1着0回でも、そのコースを1走以上していればカードは表示します。
+      <br>※ ドーナツは実測の勝利内構成です。「この選手の意外な一面」の判定は、低母数の偶然を避けるため従来どおり補正値を使用します。
     </div>`;
 }
 
@@ -1010,25 +1543,17 @@ function insightsPanel(data) {
 }
 
 function defenseMetric(label, x) {
-  if (!x) {
+  if (!x || Number(x.n || 0) < 1) {
     return `
-      <article class="defense-card">
+      <article class="defense-card defense-card-empty">
         <div class="defense-title">${label}</div>
         <div class="meta">該当データなし</div>
       </article>`;
   }
 
-  if (!x.sufficient) {
-    return `
-      <article class="defense-card">
-        <div class="defense-title">${label}</div>
-        <div class="defense-big">${x.n}回</div>
-        <div class="meta">8件未満のためデータ不足</div>
-      </article>`;
-  }
-
   const finishDiff = Number(x.avg_finish_diff);
   const top3Diff = Number(x.top3_diff_pt);
+  const isReference = Number(x.n) < 8;
   const finishText = finishDiff < 0
     ? `基準より ${fmt(Math.abs(finishDiff),2)}着 良い`
     : finishDiff > 0
@@ -1037,8 +1562,11 @@ function defenseMetric(label, x) {
   const top3Sign = top3Diff >= 0 ? "+" : "";
 
   return `
-    <article class="defense-card">
-      <div class="defense-title">${label}</div>
+    <article class="defense-card ${isReference ? "defense-reference" : ""}">
+      <div class="defense-card-head">
+        <div class="defense-title">${label}</div>
+        ${isReference ? `<span class="reference-badge">参考値</span>` : ""}
+      </div>
       <div class="defense-big">${x.n}回</div>
       <dl>
         <div><dt>平均着順</dt><dd>${fmt(x.avg_finish,2)}着</dd></div>
@@ -1048,6 +1576,7 @@ function defenseMetric(label, x) {
         <div><dt>全体基準</dt><dd>${fmt(x.baseline_top3_rate)}%</dd></div>
         <div><dt>基準差</dt><dd class="${top3Diff >= 0 ? "pos" : "neg"}">${top3Sign}${fmt(top3Diff)}pt</dd></div>
       </dl>
+      ${isReference ? `<div class="reference-note">※ 8件未満のため参考値です。数値は実測データをそのまま表示しています。</div>` : ""}
     </article>`;
 }
 
@@ -1062,6 +1591,7 @@ function defensePanel(data) {
     </div>
     <div class="notice defense-note">
       「自分より外の艇」が該当決まり手で1着になったレースで、どこまで着を残したかを集計。
+      <strong>1件から表示</strong>し、8件未満は参考値として明示します。
       基準値は、その選手が攻められた時の進入コース構成に合わせた全国平均です。
       対象期間：${esc(d.period?.start || "—")} 〜 ${esc(d.period?.end || "—")}
     </div>`;
@@ -1127,10 +1657,10 @@ async function renderRacer(regno) {
         ${courseCards(d.course_stats)}
 
         <div class="section-title" style="margin-top:32px">
-          <h2>勝った時の決まり手</h2>
-          <p>勝利数20未満は率非表示</p>
+          <h2>コース別・勝った時の決まり手</h2>
+          <p>1着1回から構成比を表示 / 分母表記あり</p>
         </div>
-        ${kimariteTable(d.win_kimarite_breakdown)}
+        ${kimariteDonuts(d.win_kimarite_breakdown, d.course_stats)}
 
         <div class="section-title" style="margin-top:32px">
           <h2>場別成績</h2>

@@ -596,3 +596,280 @@ tr:hover td { background:rgba(255,255,255,.025); }
   .defense-grid { grid-template-columns: 1fr; }
   .defense-card { padding: 14px; }
 }
+
+
+/* ==========================================================================
+   v2.2 — 全データ表示 / 決まり手ドーナツ
+   ========================================================================== */
+
+.defense-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.defense-reference {
+  border-color: rgba(241,199,91,.22);
+}
+
+.reference-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 3px 8px;
+  border: 1px solid rgba(241,199,91,.28);
+  border-radius: 999px;
+  background: rgba(241,199,91,.08);
+  color: #e9c76c;
+  font-size: 9px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.reference-note {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255,255,255,.055);
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.6;
+}
+
+.defense-card-empty {
+  min-height: 100px;
+}
+
+.kimarite-donut-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.kimarite-donut-card {
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--panel);
+  padding: 15px;
+  overflow: hidden;
+}
+
+.kimarite-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 13px;
+}
+
+.kimarite-card-head strong {
+  display: block;
+  color: #e6f0f8;
+  font-size: 17px;
+  font-weight: 950;
+  letter-spacing: -.02em;
+}
+
+.kimarite-sample {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.kimarite-sample b {
+  color: #cfe2ef;
+  font-weight: 900;
+}
+
+.kimarite-donut-body {
+  display: grid;
+  grid-template-columns: 126px minmax(0,1fr);
+  gap: 16px;
+  align-items: center;
+}
+
+.kimarite-donut {
+  position: relative;
+  width: 126px;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.035);
+}
+
+.kimarite-donut::after {
+  content: "";
+  position: absolute;
+  inset: 24%;
+  border-radius: 50%;
+  background: #0b1b2c;
+  border: 1px solid rgba(255,255,255,.06);
+  box-shadow: 0 0 20px rgba(0,0,0,.18);
+}
+
+.kimarite-donut.is-empty {
+  opacity: .72;
+}
+
+.kimarite-donut-hole {
+  position: absolute;
+  z-index: 2;
+  inset: 28%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  pointer-events: none;
+}
+
+.kimarite-donut-hole span {
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1;
+}
+
+.kimarite-donut-hole b {
+  margin-top: 4px;
+  color: #edf6fb;
+  font-size: 17px;
+  line-height: 1;
+  font-weight: 950;
+}
+
+.kimarite-legend {
+  min-width: 0;
+  display: grid;
+  gap: 7px;
+}
+
+.kimarite-legend-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.kimarite-legend-name {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #cddce7;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.kimarite-legend-name i {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  box-shadow: 0 0 8px rgba(255,255,255,.08);
+}
+
+.kimarite-legend-value {
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.kimarite-legend-value b {
+  color: #eef6fb;
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.kimarite-legend-value small {
+  min-width: 42px;
+  color: var(--muted);
+  font-size: 9px;
+  text-align: right;
+}
+
+.kimarite-no-win {
+  display: grid;
+  gap: 5px;
+}
+
+.kimarite-no-win strong {
+  color: #cddce7;
+  font-size: 11px;
+}
+
+.kimarite-no-win span {
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.55;
+}
+
+.kimarite-note {
+  margin-top: 10px;
+}
+
+@media (max-width: 720px) {
+  .kimarite-donut-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .kimarite-donut-card {
+    padding: 14px;
+  }
+
+  .kimarite-donut-body {
+    grid-template-columns: 112px minmax(0,1fr);
+    gap: 14px;
+  }
+
+  .kimarite-donut {
+    width: 112px;
+  }
+}
+
+@media (max-width: 380px) {
+  .kimarite-donut-body {
+    grid-template-columns: 100px minmax(0,1fr);
+    gap: 11px;
+  }
+
+  .kimarite-donut {
+    width: 100px;
+  }
+
+  .kimarite-legend-value {
+    gap: 4px;
+  }
+
+  .kimarite-legend-value small {
+    min-width: 38px;
+  }
+}
+
+
+/* v2.3 — 24場フィルター / 本日開催場連動 */
+.ranking-venue-context {
+  display: inline-flex;
+  width: fit-content;
+  margin-top: 4px;
+  padding: 3px 8px;
+  border: 1px solid rgba(80,224,204,.16);
+  border-radius: 999px;
+  background: rgba(80,224,204,.055);
+  color: var(--accent2);
+  font-size: 9px;
+  font-weight: 850;
+}
+.filters select#reverseVenue,
+.filters select#rankingVenue {
+  min-width: 0;
+}
+@media (max-width:720px) {
+  .ranking-filters {
+    grid-template-columns: 1fr 1fr;
+  }
+  .ranking-filters .action-field {
+    grid-column: 1 / -1;
+  }
+}
