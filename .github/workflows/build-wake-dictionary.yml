@@ -25,8 +25,16 @@ jobs:
         with:
           node-version: "24"
 
+      - name: Cache npm downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-node24-npm-${{ hashFiles('package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node24-npm-
+
       - name: Install dependencies
-        run: npm install --no-audit --no-fund
+        run: npm install --prefer-offline --no-audit --no-fund
 
       - name: Refresh racer grade and branch
         env:
@@ -39,14 +47,12 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           WAKE_DICTIONARY_OUT_DIR: public/data
+          WAKE_RACER_BATCH_SIZE: "50"
+          WAKE_VENUE_BATCH_SIZE: "50"
+          WAKE_KIMARITE_BATCH_SIZE: "10"
         run: node scripts/export_wake_dictionary.mjs
 
-      - name: Generate today's race entries
-        env:
-          WAKE_DICTIONARY_OUT_DIR: public/data
-        run: node scripts/collect_today_entries.mjs
-
-      - name: Validate global aggregates
+      - name: Today entries + validation in parallel
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
@@ -54,7 +60,27 @@ jobs:
           VERIFY_A2_REGNO: ${{ vars.VERIFY_A2_REGNO }}
           VERIFY_B1_REGNO: ${{ vars.VERIFY_B1_REGNO }}
           WAKE_DICTIONARY_OUT_DIR: public/data
-        run: node scripts/validate_wake_dictionary.mjs
+          TODAY_ENTRIES_CONCURRENCY: "10"
+        shell: bash
+        run: |
+          set +e
+          node scripts/collect_today_entries.mjs > /tmp/today.log 2>&1 &
+          TODAY_PID=$!
+          node scripts/validate_wake_dictionary.mjs > /tmp/validate.log 2>&1 &
+          VALIDATE_PID=$!
+
+          wait "$TODAY_PID"; TODAY_STATUS=$?
+          wait "$VALIDATE_PID"; VALIDATE_STATUS=$?
+
+          echo "===== today entries ====="
+          cat /tmp/today.log
+          echo "===== validation ====="
+          cat /tmp/validate.log
+
+          if [ "$TODAY_STATUS" -ne 0 ] || [ "$VALIDATE_STATUS" -ne 0 ]; then
+            echo "Pre-deploy checks failed. Production remains on the previous successful deployment."
+            exit 1
+          fi
 
       - name: Confirm generated data exists
         shell: bash
@@ -68,8 +94,14 @@ jobs:
           du -sh public/data
           find public/data/racers -type f | wc -l
 
-      - name: Install Vercel CLI
-        run: npm install --global vercel@latest
+      - name: Stage private paid data
+        shell: bash
+        run: |
+          rm -rf private-data
+          mv public/data private-data
+          test -f private-data/index.json
+          test ! -e public/data
+          echo "Paid JSON staged outside Vite public directory."
 
       # v1.5.3:
       # .vercel/project.json を手作りしない。
@@ -80,7 +112,7 @@ jobs:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
         run: |
           rm -rf .vercel
-          vercel link \
+          npx --yes vercel@59.1.3 link \
             --yes \
             --project wake-dictionary \
             --scope hunaken-akademia \
@@ -90,7 +122,7 @@ jobs:
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
         run: |
-          vercel pull \
+          npx --yes vercel@59.1.3 pull \
             --yes \
             --environment=production \
             --scope hunaken-akademia \
@@ -100,7 +132,7 @@ jobs:
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
         run: |
-          DEPLOY_URL="$(vercel deploy \
+          DEPLOY_URL="$(npx --yes vercel@59.1.3 deploy \
             --prod \
             --yes \
             --scope hunaken-akademia \
@@ -117,8 +149,12 @@ jobs:
         shell: bash
         run: |
           echo "Inspecting: $WAKE_DEPLOY_URL"
-          vercel inspect \
+          npx --yes vercel@59.1.3 inspect \
             "$WAKE_DEPLOY_URL" \
             --scope hunaken-akademia \
             --token="$VERCEL_TOKEN"
           echo "Vercel deployment verified."
+
+      - name: Production safety note
+        if: failure()
+        run: echo "Deployment did not complete; the previous Vercel production deployment remains active."
