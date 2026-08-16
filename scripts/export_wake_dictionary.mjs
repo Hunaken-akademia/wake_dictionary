@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * WAKE辞典 JSON exporter v2.0.1
+ * WAKE辞典 JSON exporter v2.1
  *
  * v1.5.4:
  *   - metadata / racers / profiles の初期取得も完全逐次化
@@ -35,7 +35,6 @@ const PAGE_SIZE = 1000;
 const RACER_BATCH_SIZE = Math.max(5, Number(process.env.WAKE_RACER_BATCH_SIZE || 50));
 const VENUE_BATCH_SIZE = Math.max(5, Number(process.env.WAKE_VENUE_BATCH_SIZE || 50));
 const KIMARITE_BATCH_SIZE = Math.max(2, Number(process.env.WAKE_KIMARITE_BATCH_SIZE || 10));
-const DEFENSE_BATCH_SIZE = Math.max(1, Number(process.env.WAKE_DEFENSE_BATCH_SIZE || 10));
 
 if (!SUPABASE_URL || !SERVICE_KEY) {
   throw new Error("SUPABASE_URL / SUPABASE_SERVICE_KEY are required");
@@ -325,56 +324,191 @@ if (metadataRows.length !== 1) {
 
 console.log(`racers=${racers.length}`);
 
-// 重い集計VIEWは同時実行しない。
-// Supabaseのstatement timeoutを避けるため、順番に取得する。
-// さらに各バッチで57014が出た場合は、そのバッチだけ自動で半分ずつ再分割する。
-const exportStartedAt = Date.now();
-console.log("fetch course stats...");
-const courseStats = await fetchByRacerBatches(
-  "wake_dictionary_course_stats_v1",
-  racers,
+// v2.1: 重い集計VIEWはここでは読まない。
+// refresh_incremental_cache.mjs が「前日走った/窓から落ちた/新規」の選手だけ更新し、
+// exporterは軽量な専用キャッシュを読む。
+console.log("fetch incremental aggregate cache...");
+const aggregateCacheRows = await fetchAllWithTimeoutRetry(
+  "wake_dictionary_incremental_cache_v1",
   {
-    order: "regno.asc,course.asc",
-    batchSize: RACER_BATCH_SIZE,
+    select: "regno,course_rows,venue_rows,kimarite_rows,defense_rows,data_end,period_start_24m,defense_start_1y",
+    order: "regno.asc",
   }
 );
 
-console.log("fetch venue stats...");
-const venueStats = await fetchByRacerBatches(
-  "wake_dictionary_venue_stats_v1",
-  racers,
-  {
-    order: "regno.asc,place_no.asc",
-    batchSize: VENUE_BATCH_SIZE,
-  }
-);
-
-console.log("fetch kimarite stats...");
-const kimariteRows = await fetchByRacerBatches(
-  "wake_dictionary_win_kimarite_v1",
-  racers,
-  {
-    order: "regno.asc,course.asc,kimarite.asc",
-    // このVIEWが最も重いため初期値を小さくする。
-    // timeoutしたバッチは自動分割される。
-    batchSize: KIMARITE_BATCH_SIZE,
-  }
-);
-
-console.log("fetch defense stats (last 1 year)...");
-console.log(`defense_batch_size=${DEFENSE_BATCH_SIZE}`);
-const defenseRows = await fetchByRacerBatches(
-  "wake_dictionary_defense_stats_1y_v1",
-  racers,
-  {
-    order: "regno.asc,defense_type.asc",
-    select: "regno,defense_type,n,avg_finish,top3_n,top3_rate,baseline_avg_finish,baseline_top3_rate,avg_finish_diff,top3_diff_pt,sufficient,period_start,period_end",
-    batchSize: DEFENSE_BATCH_SIZE,
-  }
-);
-
-console.log(`heavy_view_fetch_seconds=${((Date.now()-exportStartedAt)/1000).toFixed(1)}`);
 const md = metadataRows[0];
+const currentRegnoSet = new Set(racers.map((r) => Number(r.regno)));
+const currentCache = aggregateCacheRows.filter((r) => currentRegnoSet.has(Number(r.regno)));
+const cachedRegnos = new Set(currentCache.map((r) => Number(r.regno)));
+const missingCache = racers
+  .map((r) => Number(r.regno))
+  .filter((regno) => !cachedRegnos.has(regno));
+if (missingCache.length) {
+  throw new Error(
+    `incremental cache incomplete: missing=${missingCache.length} sample=${missingCache.slice(0,10).join(",")}. Run scripts/refresh_incremental_cache.mjs first.`
+  );
+}
+console.log(`incremental_cache_racers=${currentCache.length}`);
+
+const rawCourseStats = currentCache.flatMap((r) =>
+  Array.isArray(r.course_rows) ? r.course_rows : []
+);
+const venueStats = currentCache.flatMap((r) =>
+  Array.isArray(r.venue_rows) ? r.venue_rows : []
+);
+const rawKimariteRows = currentCache.flatMap((r) =>
+  Array.isArray(r.kimarite_rows) ? r.kimarite_rows : []
+);
+const rawDefenseRows = currentCache.flatMap((r) =>
+  Array.isArray(r.defense_rows) ? r.defense_rows : []
+);
+
+// 全国コース基準をキャッシュ済みの全選手raw値から毎回再計算する。
+// これにより、本人が前日に走っていなくても「全国基準の微変化」は正確に反映される。
+const nationalCourseAcc = new Map();
+for (let course = 1; course <= 6; course++) {
+  nationalCourseAcc.set(course, { n:0, win:0, ren2:0, ren3:0 });
+}
+for (const r of rawCourseStats) {
+  const course = Number(r.course);
+  const a = nationalCourseAcc.get(course);
+  if (!a) continue;
+  a.n += Number(r.n || 0);
+  a.win += Number(r.win_n || 0);
+  a.ren2 += Number(r.ren2_n || 0);
+  a.ren3 += Number(r.ren3_n || 0);
+}
+
+const courseStats = rawCourseStats.map((r) => {
+  const course = Number(r.course);
+  const a = nationalCourseAcc.get(course) || { n:0, win:0, ren2:0, ren3:0 };
+  const starts = Number(r.n || 0);
+  const winN = Number(r.win_n || 0);
+  const ren2N = Number(r.ren2_n || 0);
+  const ren3N = Number(r.ren3_n || 0);
+  const nationalWin = ratePct(a.win, a.n);
+  const nationalRen2 = ratePct(a.ren2, a.n);
+  const nationalRen3 = ratePct(a.ren3, a.n);
+  const rawWin = ratePct(winN, starts);
+  const rawRen2 = ratePct(ren2N, starts);
+  const rawRen3 = ratePct(ren3N, starts);
+  const adjustedWin = shrinkRatePct(winN, starts, nationalWin);
+  const adjustedRen2 = shrinkRatePct(ren2N, starts, nationalRen2);
+  const adjustedRen3 = shrinkRatePct(ren3N, starts, nationalRen3);
+  return {
+    ...r,
+    raw_win_rate: rawWin,
+    raw_ren2_rate: rawRen2,
+    raw_ren3_rate: rawRen3,
+    adjusted_win_rate: adjustedWin,
+    adjusted_ren2_rate: adjustedRen2,
+    adjusted_ren3_rate: adjustedRen3,
+    national_win_rate: nationalWin,
+    national_ren2_rate: nationalRen2,
+    national_ren3_rate: nationalRen3,
+    raw_win_diff_pt: rawWin - nationalWin,
+    raw_ren2_diff_pt: rawRen2 - nationalRen2,
+    raw_ren3_diff_pt: rawRen3 - nationalRen3,
+    adjusted_win_diff_pt: adjustedWin - nationalWin,
+    adjusted_ren2_diff_pt: adjustedRen2 - nationalRen2,
+    adjusted_ren3_diff_pt: adjustedRen3 - nationalRen3,
+    lambda: starts > 0 ? starts / (starts + SHRINK_K) : 0,
+  };
+});
+
+// 選手詳細の決まり手構成比で使う全国×コース基準。
+const nationalKimCount = new Map();
+for (let course = 1; course <= 6; course++) {
+  for (const kind of KIMARITE_KINDS) nationalKimCount.set(`${course}|${kind.name}`, 0);
+}
+for (const r of rawKimariteRows) {
+  const key = `${Number(r.course)}|${String(r.kimarite || "")}`;
+  if (nationalKimCount.has(key)) {
+    nationalKimCount.set(key, nationalKimCount.get(key) + Number(r.kimarite_n || 0));
+  }
+}
+const nationalWinsByCourse = new Map();
+for (let course = 1; course <= 6; course++) {
+  nationalWinsByCourse.set(course, nationalCourseAcc.get(course)?.win || 0);
+}
+const kimariteRows = rawKimariteRows.map((r) => {
+  const course = Number(r.course);
+  const count = nationalKimCount.get(`${course}|${String(r.kimarite || "")}`) || 0;
+  const wins = nationalWinsByCourse.get(course) || 0;
+  return { ...r, national_rate: ratePct(count, wins) };
+});
+
+// defenseは「選手×被攻撃コース×攻撃種別」のraw集計をキャッシュ。
+// 全国基準だけ全cacheから毎日再計算し、各選手の現在値に合成する。
+const defenseNational = new Map();
+for (const r of rawDefenseRows) {
+  const key = `${r.defense_type}|${r.victim_course}`;
+  if (!defenseNational.has(key)) defenseNational.set(key, { n:0, finishSum:0, top3:0 });
+  const a = defenseNational.get(key);
+  a.n += Number(r.n || 0);
+  a.finishSum += Number(r.finish_sum || 0);
+  a.top3 += Number(r.top3_n || 0);
+}
+const defenseByRacerType = new Map();
+for (const r of rawDefenseRows) {
+  const key = `${r.regno}|${r.defense_type}`;
+  if (!defenseByRacerType.has(key)) defenseByRacerType.set(key, []);
+  defenseByRacerType.get(key).push(r);
+}
+function defenseStartFromEnd(end) {
+  const d = new Date(`${end}T00:00:00Z`);
+  d.setUTCFullYear(d.getUTCFullYear() - 1);
+  d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString().slice(0,10);
+}
+const defensePeriodStart = defenseStartFromEnd(md.actual_end);
+const defenseRows = [];
+for (const racer of racers) {
+  const regno = Number(racer.regno);
+  for (const defenseType of ["まくられ", "差され"]) {
+    const parts = defenseByRacerType.get(`${regno}|${defenseType}`) || [];
+    if (!parts.length) continue;
+    let totalN=0, finishSum=0, top3N=0, weightedNationalFinish=0, weightedNationalTop3=0;
+    for (const part of parts) {
+      const pn = Number(part.n || 0);
+      if (!pn) continue;
+      const national = defenseNational.get(`${defenseType}|${part.victim_course}`);
+      if (!national?.n) continue;
+      const navg = national.finishSum / national.n;
+      const ntop3 = 100 * national.top3 / national.n;
+      totalN += pn;
+      finishSum += Number(part.finish_sum || 0);
+      top3N += Number(part.top3_n || 0);
+      weightedNationalFinish += pn * navg;
+      weightedNationalTop3 += pn * ntop3;
+    }
+    if (!totalN) continue;
+    const avgFinish = finishSum / totalN;
+    const top3Rate = 100 * top3N / totalN;
+    const baselineAvgFinish = weightedNationalFinish / totalN;
+    const baselineTop3Rate = weightedNationalTop3 / totalN;
+    defenseRows.push({
+      regno,
+      defense_type: defenseType,
+      n: totalN,
+      avg_finish: avgFinish,
+      top3_n: top3N,
+      top3_rate: top3Rate,
+      baseline_avg_finish: baselineAvgFinish,
+      baseline_top3_rate: baselineTop3Rate,
+      avg_finish_diff: avgFinish - baselineAvgFinish,
+      top3_diff_pt: top3Rate - baselineTop3Rate,
+      sufficient: totalN >= 8,
+      period_start: defensePeriodStart,
+      period_end: md.actual_end,
+    });
+  }
+}
+
+console.log(`course_rows(cache)=${courseStats.length}`);
+console.log(`venue_rows(cache)=${venueStats.length}`);
+console.log(`kimarite_rows(cache)=${kimariteRows.length}`);
+console.log(`defense_raw_rows(cache)=${rawDefenseRows.length}`);
 const generatedAt = new Date().toISOString();
 
 await rm(OUT_DIR, { recursive: true, force: true });

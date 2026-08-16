@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * WAKE辞典 v2.0.1 validation
+ * WAKE辞典 v2.1 validation
  *
  * Global checks:
  *  - racer course n sum == racer total starts
@@ -54,44 +54,57 @@ function rate(num,den){ return den ? 100*num/den : 0; }
 
 let failed = false;
 
-// 1) n sum check
-const racers = await fetchAll("wake_dictionary_racers_v1", { select:"regno,total_starts", order:"regno.asc" });
-const courses = await fetchAll("wake_dictionary_course_stats_v1", { select:"regno,course,n", order:"regno.asc,course.asc" });
-const sums = new Map();
-for (const r of courses) sums.set(Number(r.regno), (sums.get(Number(r.regno))||0)+Number(r.n));
-const mismatches = racers.filter(r => (sums.get(Number(r.regno))||0) !== Number(r.total_starts));
-console.log(`[1] course n sum == total starts: ${mismatches.length === 0 ? "PASS" : "FAIL"} mismatches=${mismatches.length}`);
+// Generated JSON helpers
+async function readJson(path) {
+  return JSON.parse(await readFile(resolve(OUT_DIR, path), "utf8"));
+}
+
+// v2.1 intentionally avoids full-table aggregate VIEW validation here.
+// The deploy artifact itself is validated globally; only 3 racers are independently
+// recomputed from base rows later in [4].
+const racers = await fetchAll("wake_dictionary_racers_v1", {
+  select:"regno,total_starts",
+  order:"regno.asc"
+});
+
+// 1) generated racer course n sum == racer total starts
+let mismatches = [];
+let cells = [];
+const perRacerWins = new Map();
+for (const racer of racers) {
+  const regno = Number(racer.regno);
+  const d = await readJson(`racers/${regno}.json`);
+  const sum = (d.course_stats || []).reduce((a,x)=>a+Number(x.n||0),0);
+  if (sum !== Number(racer.total_starts)) {
+    mismatches.push({regno, generated:sum, expected:Number(racer.total_starts)});
+  }
+  let totalWins = 0;
+  for (const c of d.win_kimarite_breakdown || []) {
+    cells.push({regno,course:Number(c.course),win_n:Number(c.win_n||0)});
+    totalWins += Number(c.win_n||0);
+  }
+  perRacerWins.set(regno,totalWins);
+}
+console.log(`[1] generated course n sum == total starts: ${mismatches.length===0?"PASS":"FAIL"} mismatches=${mismatches.length}`);
 if (mismatches.length) {
-  failed = true;
+  failed=true;
   console.log(mismatches.slice(0,20));
 }
 
-// 2) national kimarite 100%
-const nk = await fetchAll("wake_dictionary_national_win_kimarite_v1", { order:"course.asc,kimarite.asc" });
-const byCourse = new Map();
-for (const r of nk) byCourse.set(Number(r.course), (byCourse.get(Number(r.course))||0)+Number(r.national_rate));
-for (const [course,sum] of [...byCourse.entries()].sort((a,b)=>a[0]-b[0])) {
-  const ok = Math.abs(sum-100) < 1e-7;
-  console.log(`[2] national kimarite course=${course} sum=${sum.toFixed(9)} ${ok?"PASS":"FAIL"}`);
-  if (!ok) failed = true;
+// 2) national kimarite composition from generated baselines sums to ~100%
+const generatedBaselines = await readJson("meta/baselines.json");
+for (let course=1;course<=6;course++) {
+  const comp = generatedBaselines.grade_course?.ALL?.[String(course)]?.kimarite_win_composition || {};
+  const vals = Object.values(comp).filter((v)=>v!=null).map(Number);
+  const sum = vals.reduce((a,b)=>a+b,0);
+  const ok = vals.length===6 && Math.abs(sum-100) < 0.02;
+  console.log(`[2] generated national kimarite course=${course} sum=${sum.toFixed(3)} ${ok?"PASS":"FAIL"}`);
+  if(!ok) failed=true;
 }
 
-// 3) thin sample prevalence
-const wk = await fetchAll("wake_dictionary_win_kimarite_v1", {
-  select:"regno,course,win_n,sufficient",
-  order:"regno.asc,course.asc"
-});
-const seen = new Map();
-for (const r of wk) {
-  const k = `${r.regno}|${r.course}`;
-  if (!seen.has(k)) seen.set(k, { regno:Number(r.regno), course:Number(r.course), win_n:Number(r.win_n) });
-}
-const cells = [...seen.values()];
-const thinCells = cells.filter(x => x.win_n < 5);
-const perRacerWins = new Map();
-for (const x of cells) perRacerWins.set(x.regno, (perRacerWins.get(x.regno)||0)+x.win_n);
-const thinRacers = [...perRacerWins.entries()].filter(([,wins]) => wins < 5);
-
+// 3) thin sample prevalence from generated player JSON
+const thinCells = cells.filter(x=>x.win_n<5);
+const thinRacers = [...perRacerWins.entries()].filter(([,wins])=>wins<5);
 console.log(`[3] racer-course cells win_n<5: ${thinCells.length}/${cells.length} = ${(100*thinCells.length/Math.max(cells.length,1)).toFixed(2)}%`);
 console.log(`[3] racers total wins<5: ${thinRacers.length}/${perRacerWins.size} = ${(100*thinRacers.length/Math.max(perRacerWins.size,1)).toFixed(2)}%`);
 
@@ -129,10 +142,20 @@ if (verify.some(([,v]) => !v)) {
       filters:[["regno",`eq.${regno}`]],
       order:"course.asc"
     });
-    const agg = await fetchAll("wake_dictionary_course_stats_v1", {
-      filters:[["regno",`eq.${regno}`]],
-      order:"course.asc"
-    });
+    const generatedRacer = await readJson(`racers/${regno}.json`);
+    const agg = (generatedRacer.course_stats || []).map((x) => ({
+      course: x.course,
+      n: x.n,
+      win_n: x.finish_counts?.win,
+      ren2_n: x.finish_counts?.ren2,
+      ren3_n: x.finish_counts?.ren3,
+      f_count: x.start?.f_count,
+      l_count: x.start?.l_count,
+      avg_st: x.start?.avg_st,
+      raw_win_rate: x.rates?.raw?.win,
+      raw_ren2_rate: x.rates?.raw?.ren2,
+      raw_ren3_rate: x.rates?.raw?.ren3,
+    }));
 
     const manual = new Map();
     for (const r of raw) {
@@ -176,9 +199,6 @@ if (verify.some(([,v]) => !v)) {
 
 
 // 5) generated reverse/ranking JSON checks
-async function readJson(path) {
-  return JSON.parse(await readFile(resolve(OUT_DIR, path), "utf8"));
-}
 function isSortedDesc(rows, key) {
   for (let i = 1; i < rows.length; i++) {
     if (Number(rows[i-1][key]) < Number(rows[i][key]) - 1e-12) return false;

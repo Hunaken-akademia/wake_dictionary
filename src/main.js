@@ -683,6 +683,16 @@ function updateRankingDescription() {
   `;
 }
 
+function rankingMetricLabel(data) {
+  if (data?.metric === "win_rate") return "1着率";
+  if (data?.metric === "kimarite_win_rate_per_start") {
+    return `${data?.kimarite || "決まり手"}1着率`;
+  }
+  if (data?.metric === "nige_win_rate_per_start") return "逃げ1着率";
+  if (data?.metric === "ren3_rate") return "3連対率";
+  return "率";
+}
+
 function sortRankingRows(rows, data) {
   const out = [...rows];
   const isST = data.metric === "avg_st";
@@ -770,24 +780,25 @@ async function loadRanking() {
           </tbody>
         </table>`;
     } else if (state.useAdjusted) {
+      const metricLabel = rankingMetricLabel(data);
       box.innerHTML = `
         <table>
-          <thead><tr><th>#</th><th>選手</th><th>級別</th><th>支部</th><th>母数(n)</th><th>実測</th><th>補正</th><th>基準差</th></tr></thead>
+          <thead><tr><th>#</th><th>選手</th><th>級別</th><th>支部</th><th>母数(n)</th><th>${esc(metricLabel)}</th><th>基準差</th></tr></thead>
           <tbody>${rows.slice(0,200).map((r,i)=>`
             <tr data-open="${r.regno}">
               <td class="rank">${i+1}</td>
               <td><strong>${esc(r.name)}</strong><div class="meta">#${r.regno}</div>${todayInline(r.regno)}</td>
               <td>${esc(r.grade||"—")}</td><td>${esc(r.branch||"—")}</td><td>${r.n}</td>
-              <td>${fmt(r.rawRate)}%</td>
-              <td class="rate">${fmt(r.adjRate)}%</td>
+              <td class="rate">${fmt(r.adjRate)}%<div class="meta">（実測 ${fmt(r.rawRate)}%）</div></td>
               <td class="${Number(r.diffPtAdjusted)>=0?"pos":"neg"}">${Number(r.diffPtAdjusted)>=0?"+":""}${fmt(r.diffPtAdjusted)}pt</td>
             </tr>`).join("")}
           </tbody>
         </table>`;
     } else {
+      const metricLabel = rankingMetricLabel(data);
       box.innerHTML = `
         <table>
-          <thead><tr><th>#</th><th>選手</th><th>級別</th><th>支部</th><th>母数(n)</th><th>実測</th><th>基準値</th><th>実測基準差</th></tr></thead>
+          <thead><tr><th>#</th><th>選手</th><th>級別</th><th>支部</th><th>母数(n)</th><th>${esc(metricLabel)}</th><th>基準値</th><th>実測基準差</th></tr></thead>
           <tbody>${rows.slice(0,200).map((r,i)=>{
             const rawDiff = Number(r.rawRate) - Number(r.baselineRate);
             return `
@@ -795,7 +806,7 @@ async function loadRanking() {
                 <td class="rank">${i+1}</td>
                 <td><strong>${esc(r.name)}</strong><div class="meta">#${r.regno}</div>${todayInline(r.regno)}</td>
                 <td>${esc(r.grade||"—")}</td><td>${esc(r.branch||"—")}</td><td>${r.n}</td>
-                <td class="rate">${fmt(r.rawRate)}%</td>
+                <td class="rate">${fmt(r.rawRate)}%<div class="meta">（実測）</div></td>
                 <td>${fmt(r.baselineRate)}%</td>
                 <td class="${rawDiff>=0?"pos":"neg"}">${rawDiff>=0?"+":""}${fmt(rawDiff)}pt</td>
               </tr>`;
