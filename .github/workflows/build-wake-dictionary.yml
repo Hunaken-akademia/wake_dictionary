@@ -19,6 +19,14 @@ jobs:
         with:
           node-version: "20"
 
+      - name: Refresh racer grade and branch
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          RACER_PROFILE_FRESH_DAYS: "7"
+          RACER_PROFILE_CONCURRENCY: "4"
+        run: node scripts/collect_racer_profiles.mjs
+
       - name: Generate static JSON
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
