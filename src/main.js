@@ -7,6 +7,9 @@ const state = {
   index: [],
   generatedAt: null,
   useAdjusted: localStorage.getItem("wake_use_adjusted") !== "0",
+  todayOnly: localStorage.getItem("wake_today_only") === "1",
+  todayMeta: null,
+  todayByRegno: new Map(),
 };
 
 const KIMARITE = [
@@ -53,6 +56,7 @@ const GUIDE_ITEMS = [
   ["スタート巧者", "平均STが速い選手を比較します。STは小さいほど速い数値です。"],
   ["Fなし", "集計期間内のF回数が0の選手だけに絞ったランキングです。"],
   ["決まり手", "1着になったレースの勝ち方。逃げ・差し・まくり・まくり差し・抜き・恵まれの6種類を扱います。"],
+  ["本日出走のみ", "本日レースに出走予定の選手だけに絞る機能です。選手検索・逆引き検索・ランキングで利用できます。出走予定は毎日の自動更新時にBOATCASTの当日出走表から取得します。"],
 ];
 
 const $ = (s, root = document) => root.querySelector(s);
@@ -68,6 +72,60 @@ const placeNames = {
   9:"津",10:"三国",11:"びわこ",12:"住之江",13:"尼崎",14:"鳴門",15:"丸亀",16:"児島",
   17:"宮島",18:"徳山",19:"下関",20:"若松",21:"芦屋",22:"福岡",23:"唐津",24:"大村"
 };
+
+
+function todayEntry(regno) {
+  return state.todayByRegno.get(Number(regno)) || null;
+}
+
+function todayRaceLabel(regno) {
+  const row = todayEntry(regno);
+  if (!row?.entries?.length) return "";
+  const byPlace = new Map();
+  for (const e of row.entries) {
+    const p = Number(e.place_no);
+    if (!byPlace.has(p)) byPlace.set(p, []);
+    byPlace.get(p).push(Number(e.race_no));
+  }
+  return [...byPlace.entries()].map(([p, races]) => {
+    const uniq = [...new Set(races)].sort((a,b) => a-b);
+    return `${placeNames[p] || `${p}場`} ${uniq.map((r)=>`${r}R`).join("・")}`;
+  }).join(" / ");
+}
+
+function todayInline(regno) {
+  const label = todayRaceLabel(regno);
+  return label ? `<div class="today-inline">本日 ${esc(label)}</div>` : "";
+}
+
+function todayFilterControl() {
+  const available = Number(state.todayMeta?.racer_count || 0) > 0;
+  return `
+    <label class="today-filter ${available ? "" : "disabled"}">
+      <input type="checkbox" data-today-toggle ${state.todayOnly && available ? "checked" : ""} ${available ? "" : "disabled"}>
+      <span class="today-check"></span>
+      <span>本日出走のみ</span>
+      ${available
+        ? `<small>${Number(state.todayMeta.racer_count).toLocaleString()}人</small>`
+        : `<small>出走情報未取得</small>`}
+    </label>`;
+}
+
+function bindTodayToggle(onChange) {
+  $$("[data-today-toggle]").forEach((input) => {
+    input.addEventListener("change", (e) => {
+      state.todayOnly = Boolean(e.target.checked);
+      localStorage.setItem("wake_today_only", state.todayOnly ? "1" : "0");
+      if (typeof onChange === "function") onChange();
+      else route();
+    });
+  });
+}
+
+function keepToday(rows) {
+  if (!state.todayOnly) return rows;
+  return rows.filter((r) => state.todayByRegno.has(Number(r.regno)));
+}
 
 async function getJson(path) {
   const r = await fetch(path, { cache: "no-store" });
@@ -185,6 +243,10 @@ function hero() {
       <p>選手ごとのコース別成績・場別成績・勝ち方の傾向を、母数まで含めて確認できる競艇データ辞典。補正はいつでもON/OFFできます。</p>
       <div class="search-wrap">
         <input id="racerSearch" class="search" placeholder="選手名・登録番号で検索" autocomplete="off" />
+        <div class="search-tools">
+          ${todayFilterControl()}
+          <span class="search-hint">※かな検索は読み仮名データ確認後に対応予定</span>
+        </div>
         <div id="suggestions" class="suggestions"></div>
       </div>
       <div class="status-row">
@@ -228,24 +290,31 @@ function bindSearch() {
 
   const render = () => {
     const q = input.value.trim().toLowerCase();
+
     if (!q) {
       box.classList.remove("show");
+      box.innerHTML = "";
       return;
     }
 
-    const rows = state.index.filter((r) =>
+    const rows = keepToday(state.index).filter((r) =>
       String(r.regno).includes(q) ||
-      String(r.name || "").toLowerCase().includes(q)
+      String(r.name || "").toLowerCase().includes(q) ||
+      String(r.kana || r.reading || "").toLowerCase().includes(q)
     ).slice(0, 8);
 
     box.innerHTML = rows.length
       ? rows.map((r) => `
           <button class="suggestion" data-regno="${r.regno}">
-            <span><strong>${esc(r.name)}</strong> <span class="meta">#${r.regno}</span></span>
+            <span class="suggestion-main">
+              <strong>${esc(r.name)}</strong>
+              <span class="meta">#${r.regno}</span>
+              ${todayInline(r.regno)}
+            </span>
             <span class="meta">${esc(r.grade || "—")}・${esc(r.branch || "—")}</span>
           </button>
         `).join("")
-      : `<div class="empty">該当する選手が見つかりません</div>`;
+      : `<div class="empty">${state.todayOnly ? "本日出走予定の選手に該当なし" : "該当する選手が見つかりません"}</div>`;
 
     box.classList.add("show");
 
@@ -261,6 +330,8 @@ function bindSearch() {
       if (first) location.hash = `#/racer/${first.dataset.regno}`;
     }
   });
+
+  bindTodayToggle(render);
 }
 
 function bindHome() {
@@ -316,6 +387,11 @@ function reverseFilters() {
         </div>
       </div>
 
+      <div class="sub-filter-row">
+        ${todayFilterControl()}
+        ${state.todayOnly ? `<span class="sub-filter-note">本日の出走予定選手だけに絞り込み中</span>` : ""}
+      </div>
+
       <div id="reverseResult" class="table-wrap"><div class="empty">条件を読み込み中…</div></div>
 
       <div class="notice">
@@ -358,7 +434,7 @@ async function loadReverse() {
   try {
     const data = await getJson(`${DATA_ROOT}/index/reverse_course${c}_${slug}_${grade}.json`);
     const rows = sortReverseRows(
-      (data.rows || []).filter((r) => Number(r.n) >= minN)
+      keepToday((data.rows || []).filter((r) => Number(r.n) >= minN))
     );
 
     if (!rows.length) {
@@ -376,7 +452,7 @@ async function loadReverse() {
           <tbody>${rows.slice(0,200).map((r,i)=>`
             <tr data-open="${r.regno}">
               <td class="rank">${i+1}</td>
-              <td><strong>${esc(r.name)}</strong><div class="meta">#${r.regno}</div></td>
+              <td><strong>${esc(r.name)}</strong><div class="meta">#${r.regno}</div>${todayInline(r.regno)}</td>
               <td>${esc(r.grade||"—")}</td>
               <td>${esc(r.branch||"—")}</td>
               <td>${r.n}</td>
@@ -399,7 +475,7 @@ async function loadReverse() {
             return `
               <tr data-open="${r.regno}">
                 <td class="rank">${i+1}</td>
-                <td><strong>${esc(r.name)}</strong><div class="meta">#${r.regno}</div></td>
+                <td><strong>${esc(r.name)}</strong><div class="meta">#${r.regno}</div>${todayInline(r.regno)}</td>
                 <td>${esc(r.grade||"—")}</td>
                 <td>${esc(r.branch||"—")}</td>
                 <td>${r.n}</td>
@@ -435,6 +511,7 @@ async function renderReverse() {
     timer = setTimeout(loadReverse, 180);
   });
 
+  bindTodayToggle(() => renderReverse());
   loadReverse();
 }
 
@@ -479,6 +556,11 @@ function rankingView() {
           <label>&nbsp;</label>
           <button class="primary" id="rankReload">表示</button>
         </div>
+      </div>
+
+      <div class="sub-filter-row">
+        ${todayFilterControl()}
+        ${state.todayOnly ? `<span class="sub-filter-note">本日の出走予定選手だけに絞り込み中</span>` : ""}
       </div>
 
       <div id="rankingDescription" class="ranking-description"></div>
@@ -556,7 +638,7 @@ async function loadRanking() {
   try {
     const data = await getJson(`${DATA_ROOT}/index/${file}`);
     const rows = sortRankingRows(
-      (data.rows || []).filter((r) => Number(r.n) >= minN),
+      keepToday((data.rows || []).filter((r) => Number(r.n) >= minN)),
       data
     );
     const isST = data.metric === "avg_st";
@@ -573,7 +655,7 @@ async function loadRanking() {
           <tbody>${rows.slice(0,200).map((r,i)=>`
             <tr data-open="${r.regno}">
               <td class="rank">${i+1}</td>
-              <td><strong>${esc(r.name)}</strong><div class="meta">#${r.regno}</div></td>
+              <td><strong>${esc(r.name)}</strong><div class="meta">#${r.regno}</div>${todayInline(r.regno)}</td>
               <td>${esc(r.grade||"—")}</td><td>${esc(r.branch||"—")}</td><td>${r.n}</td>
               <td>${fmt(r.avgSt,3)}</td><td class="rate">${fmt(r.adjustedSt,3)}</td><td>${r.f_count ?? 0}</td>
             </tr>`).join("")}
@@ -584,7 +666,7 @@ async function loadRanking() {
           <tbody>${rows.slice(0,200).map((r,i)=>`
             <tr data-open="${r.regno}">
               <td class="rank">${i+1}</td>
-              <td><strong>${esc(r.name)}</strong><div class="meta">#${r.regno}</div></td>
+              <td><strong>${esc(r.name)}</strong><div class="meta">#${r.regno}</div>${todayInline(r.regno)}</td>
               <td>${esc(r.grade||"—")}</td><td>${esc(r.branch||"—")}</td><td>${r.n}</td>
               <td class="rate">${fmt(r.avgSt,3)}</td><td>${r.f_count ?? 0}</td>
             </tr>`).join("")}
@@ -597,7 +679,7 @@ async function loadRanking() {
           <tbody>${rows.slice(0,200).map((r,i)=>`
             <tr data-open="${r.regno}">
               <td class="rank">${i+1}</td>
-              <td><strong>${esc(r.name)}</strong><div class="meta">#${r.regno}</div></td>
+              <td><strong>${esc(r.name)}</strong><div class="meta">#${r.regno}</div>${todayInline(r.regno)}</td>
               <td>${esc(r.grade||"—")}</td><td>${esc(r.branch||"—")}</td><td>${r.n}</td>
               <td>${fmt(r.rawRate)}%</td>
               <td class="rate">${fmt(r.adjRate)}%</td>
@@ -614,7 +696,7 @@ async function loadRanking() {
             return `
               <tr data-open="${r.regno}">
                 <td class="rank">${i+1}</td>
-                <td><strong>${esc(r.name)}</strong><div class="meta">#${r.regno}</div></td>
+                <td><strong>${esc(r.name)}</strong><div class="meta">#${r.regno}</div>${todayInline(r.regno)}</td>
                 <td>${esc(r.grade||"—")}</td><td>${esc(r.branch||"—")}</td><td>${r.n}</td>
                 <td class="rate">${fmt(r.rawRate)}%</td>
                 <td>${fmt(r.baselineRate)}%</td>
@@ -646,6 +728,7 @@ async function renderRanking() {
     timer = setTimeout(loadRanking, 180);
   });
 
+  bindTodayToggle(() => renderRanking());
   updateRankingDescription();
   loadRanking();
 }
@@ -787,6 +870,7 @@ async function renderRacer(regno) {
             <div class="kicker">RACER PROFILE</div>
             <h2>${esc(r.name)}</h2>
             <div class="detail-meta">登録 ${r.regno} / ${esc(r.grade||"—")} / ${esc(r.branch||"—")} / ${d.totals?.n ?? 0}走</div>
+            ${todayRaceLabel(r.regno) ? `<div class="today-detail">本日出走予定：${esc(todayRaceLabel(r.regno))}</div>` : ""}
           </div>
           <div class="meta">集計期間 ${esc(d.data_period?.actual_start||"—")} 〜 ${esc(d.data_period?.actual_end||"—")}</div>
         </div>
@@ -833,15 +917,25 @@ async function renderRacer(regno) {
 
 async function boot() {
   try {
-    const [index, baselines] = await Promise.all([
+    const [index, baselines, todayMeta] = await Promise.all([
       getJson(`${DATA_ROOT}/index.json`),
-      getJson(`${DATA_ROOT}/meta/baselines.json`).catch(() => null)
+      getJson(`${DATA_ROOT}/meta/baselines.json`).catch(() => null),
+      getJson(`${DATA_ROOT}/today_entries.json`).catch(() => null)
     ]);
 
     state.index = Array.isArray(index) ? index : [];
     state.generatedAt = baselines?.generated_at
       ? new Date(baselines.generated_at).toLocaleString("ja-JP")
       : null;
+
+    state.todayMeta = todayMeta && Array.isArray(todayMeta.racers) ? todayMeta : null;
+    state.todayByRegno = new Map(
+      (state.todayMeta?.racers || []).map((r) => [Number(r.regno), r])
+    );
+    if (!state.todayMeta?.racer_count) {
+      state.todayOnly = false;
+      localStorage.removeItem("wake_today_only");
+    }
   } catch (e) {
     shell(`
       <section class="section shell">
