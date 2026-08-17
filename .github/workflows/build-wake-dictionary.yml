@@ -112,6 +112,24 @@ jobs:
           test -f public/data/index/reverse_catalog.json
           test -f public/data/index/ranking_catalog.json
           test -f public/data/today_entries.json
+          node - <<'NODE'
+          const fs = require("fs");
+          const d = JSON.parse(fs.readFileSync("public/data/today_entries.json", "utf8"));
+          const parts = new Intl.DateTimeFormat("en-CA", {
+            timeZone: "Asia/Tokyo",
+            year: "numeric",
+            month: "2-digit",
+            day: "2-digit",
+          }).formatToParts(new Date());
+          const o = Object.fromEntries(parts.map((p) => [p.type, p.value]));
+          const jstToday = `${o.year}-${o.month}-${o.day}`;
+          console.log(`today_entries_check file_date=${d.date} jst_today=${jstToday} racers=${d.racer_count}`);
+          if (d.date !== jstToday) throw new Error(`today_entries date mismatch: ${d.date} != ${jstToday}`);
+          if (!(Number(d.racer_count) > 0)) throw new Error("today_entries racer_count is 0");
+          if (!Array.isArray(d.racers) || d.racers.length !== Number(d.racer_count)) {
+            throw new Error("today_entries racer payload mismatch");
+          }
+          NODE
           test -d public/data/features
           FEATURE_COUNT="$(find public/data/features -type f -name '*.json' | wc -l)"
           echo "feature_files=$FEATURE_COUNT"
