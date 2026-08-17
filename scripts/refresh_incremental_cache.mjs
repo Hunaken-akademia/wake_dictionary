@@ -23,6 +23,12 @@ const VENUE_BATCH = Math.max(5, Number(process.env.WAKE_VENUE_BATCH_SIZE || 50))
 const KIM_BATCH = Math.max(2, Number(process.env.WAKE_KIMARITE_BATCH_SIZE || 10));
 const DEF_BATCH = Math.max(2, Number(process.env.WAKE_DEFENSE_BATCH_SIZE || 20));
 const VENUE_COURSE_BATCH = Math.max(5, Number(process.env.WAKE_VENUE_COURSE_BATCH_SIZE || 25));
+// rank / kimarite / STなど既存行の後日訂正はcreated_atが変わらない場合がある。
+// そのため直近数日分だけは毎回再計算し、差分キャッシュの取りこぼしを自動修復する。
+const RECENT_CORRECTION_RECHECK_DAYS = Math.max(
+  1,
+  Number(process.env.WAKE_RECENT_CORRECTION_RECHECK_DAYS || 3)
+);
 
 if (!SUPABASE_URL || !SERVICE_KEY) {
   throw new Error("SUPABASE_URL / SUPABASE_SERVICE_KEY are required");
@@ -188,7 +194,7 @@ async function lateCreatedRows(sinceIso, periodStart, periodEnd) {
   });
 }
 
-console.log("WAKE dictionary v2.1 incremental cache refresh start");
+console.log("WAKE dictionary v2.3.2 incremental cache refresh start");
 console.log(`force_full=${FORCE_FULL}`);
 
 // Supabaseの重いmetadata VIEWと他queryを同時に走らせない。
@@ -249,8 +255,28 @@ if(FORCE_FULL || !state?.last_data_end || !state?.period_start_24m || !state?.de
   const expiredDefense = oldDefenseStart < currentDefenseStart ? await impactRows(oldDefenseStart,currentDefenseStart) : [];
   const lateRows = await lateCreatedRows(state.updated_at, currentStart, currentEnd);
 
-  for(const x of [...newRows,...expired24,...expiredDefense,...lateRows]){
-    const r=Number(x.regno); if(Number.isFinite(r) && currentSet.has(r)) affected.add(r);
+  // created_atだけでは拾えない「既存結果行の後日訂正」対策。
+  // 例: rankが1→2へ訂正された場合、総走数nは同じでもwin_n/ren2_n等だけ変わる。
+  // 直近N日を毎朝recheckして、その期間に走った選手だけ再集計する。
+  const correctionRecheckStart = addDays(
+    currentEnd,
+    -(RECENT_CORRECTION_RECHECK_DAYS - 1)
+  );
+  const correctionRecheckEndExclusive = addDays(currentEnd, 1);
+  const recentCorrectionRows = await impactRows(
+    correctionRecheckStart,
+    correctionRecheckEndExclusive
+  );
+
+  for(const x of [
+    ...newRows,
+    ...expired24,
+    ...expiredDefense,
+    ...lateRows,
+    ...recentCorrectionRows,
+  ]){
+    const r=Number(x.regno);
+    if(Number.isFinite(r) && currentSet.has(r)) affected.add(r);
   }
 
   // raw_rows差分は診断用。除外レース等で単純一致しない可能性があるため、
@@ -266,6 +292,9 @@ if(FORCE_FULL || !state?.last_data_end || !state?.period_start_24m || !state?.de
   console.log(`delta_expired_24m_rows=${expired24.length}`);
   console.log(`delta_expired_defense_rows=${expiredDefense.length}`);
   console.log(`delta_late_created_rows=${lateRows.length}`);
+  console.log(
+    `delta_recent_correction_rows=${recentCorrectionRows.length} days=${RECENT_CORRECTION_RECHECK_DAYS}`
+  );
 }
 
 const ids=[...affected].sort((a,b)=>a-b);
@@ -348,4 +377,4 @@ await upsert("wake_dictionary_incremental_state_v1",[{
 }],"id");
 
 console.log(`cache_state_data_end=${currentEnd}`);
-console.log("WAKE dictionary v2.3 incremental cache refresh complete");
+console.log("WAKE dictionary v2.3.2 incremental cache refresh complete");
