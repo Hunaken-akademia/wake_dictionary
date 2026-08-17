@@ -74,7 +74,7 @@ const GUIDE_ITEMS = [
   ["ランキング成績基準", "「選択場の成績」はその場での過去成績で順位付け。「全場の成績」は全国24場を通した過去成績で順位付けし、選んだ場に本日出走する選手だけを抽出できます。"],
   ["紐推し", "1着固定ではなく2・3着候補として見つけやすいよう、指定コースの3連対率が高い選手を比較します。"],
   ["女子選手", "公式女子レーサー名鑑の現役選手だけに絞ります。B級の伏兵など他の条件とも同時に使えます。"],
-  ["本日の出走区分", "本日の出走表を6艇単位で判定し、女子選手だけのレースと男女混合レースを分けます。選ぶと本日出走選手に自動的に絞られます。"],
+  ["過去レース区分", "過去2年の成績を、女子選手6名の女子戦と、女子選手が男子選手と走った男女混合戦に分けて再集計します。本日出走のみとは独立して併用できます。"],
 ];
 
 const $ = (s, root = document) => root.querySelector(s);
@@ -1586,7 +1586,7 @@ function rankingViewV25() {
           <option value="VENUE" ${selected("VENUE",state.rankingBasis)}>選択場の成績</option>
           <option value="ALL" ${selected("ALL",state.rankingBasis)}>全場の成績</option>
         </select></div>
-        <div class="field"><label>本日の出走区分</label><select id="rankingRaceClass">
+        <div class="field"><label>過去レース区分</label><select id="rankingRaceClass">
           <option value="ALL" ${selected("ALL",state.rankingRaceClass)}>指定なし</option>
           <option value="WOMEN" ${selected("WOMEN",state.rankingRaceClass)}>女子戦</option>
           <option value="MIXED" ${selected("MIXED",state.rankingRaceClass)}>男女混合戦</option>
@@ -1598,7 +1598,7 @@ function rankingViewV25() {
       <div class="sub-filter-row">${todayFilterControl()}<span class="sub-filter-note">女子・女子戦/混合戦・級別・コースは同時指定できます</span></div>
       <div id="rankingDescription" class="ranking-description"></div>
       <div id="rankingResult" class="table-wrap"><div class="empty">読み込み中…</div></div>
-      <div class="notice">母数(n)は必ず併記します。女子戦・男女混合戦は本日の出走表に対する分類です。</div>
+      <div class="notice">母数(n)は必ず併記します。女子戦・男女混合戦は過去2年の各レースの出走構成で分類した成績です。</div>
     </section>`;
 }
 
@@ -1629,15 +1629,22 @@ async function loadRankingV25() {
   persistRankingV25();
 
   try {
-    const source = effectiveBasis === "ALL"
-      ? await getJson(`${DATA_ROOT}/index/ranking_source.json`)
-      : await getJson(venueDataPath(placeNo));
+    let source;
+    if (raceClass !== "ALL") {
+      const historical = await getJson(`${DATA_ROOT}/index/historical_race_classes.json`);
+      const classData = historical?.classes?.[raceClass];
+      source = effectiveBasis === "ALL" ? classData?.all : classData?.venues?.[String(placeNo)];
+      if (!source) throw new Error("過去レース区分データを取得できません");
+    } else {
+      source = effectiveBasis === "ALL"
+        ? await getJson(`${DATA_ROOT}/index/ranking_source.json`)
+        : await getJson(venueDataPath(placeNo));
+    }
     const data = buildRankingDataV25(source,{type,gradeValue,courseValue,femaleOnly});
     let rows = data.rows.filter((r)=>Number(r.n)>=minN);
     if (state.todayOnly) rows = keepToday(rows,placeNo);
-    if (raceClass !== "ALL") rows = rows.filter((r)=>todayAtRaceClass(r.regno,raceClass,placeNo));
     rows = sortRankingRows(rows,data);
-    if ((state.todayOnly || raceClass !== "ALL") && placeNo !== "ALL") {
+    if (state.todayOnly && placeNo !== "ALL") {
       const order = new Map(rows.map((r,i)=>[Number(r.regno),i]));
       rows = [...rows].sort((a,b)=>earliestTodayRaceNo(a.regno,placeNo)-earliestTodayRaceNo(b.regno,placeNo)
         || (order.get(Number(a.regno))??Infinity)-(order.get(Number(b.regno))??Infinity));
@@ -1650,10 +1657,10 @@ async function loadRankingV25() {
       <div class="ranking-context-row"><span class="ranking-venue-context">${esc(venueLabel)}・${esc(effectiveBasis==="ALL"?"全場成績":"選択場成績")}</span>
       <span class="ranking-basis-context">${esc(gradeLabel)}・${esc(rankingCourseLabelV25(data.courses))}</span>
       ${femaleOnly?`<span class="ranking-female-context">女子のみ</span>`:""}
-      ${raceClass!=="ALL"?`<span class="ranking-order-context">本日${raceClass==="WOMEN"?"女子戦":"男女混合戦"}</span>`:""}</div>`;
+      ${raceClass!=="ALL"?`<span class="ranking-order-context">過去${raceClass==="WOMEN"?"女子戦":"男女混合戦"}成績</span>`:""}</div>`;
 
     if (!rows.length) {
-      box.innerHTML = `<div class="empty">該当データなし${raceClass!=="ALL" && state.todayMetaStatus!=="ok"?"（本日の出走情報を更新待ち）":""}</div>`;
+      box.innerHTML = `<div class="empty">該当データなし</div>`;
       return;
     }
     const isST = data.metric === "avg_st";

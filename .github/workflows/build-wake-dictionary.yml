@@ -79,6 +79,14 @@ jobs:
           WAKE_WOMEN_RACERS_FILE: data/women_racers.json
         run: node scripts/export_wake_dictionary.mjs
 
+      - name: Generate historical women / mixed race rankings
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          WAKE_DICTIONARY_OUT_DIR: public/data
+          WAKE_WOMEN_RACERS_FILE: data/women_racers.json
+        run: node scripts/export_historical_race_classes.mjs
+
       - name: Today entries + validation in parallel
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -122,6 +130,7 @@ jobs:
           test -f public/data/index/ranking_catalog.json
           test -f public/data/today_entries.json
           test -f public/data/index/ranking_source.json
+          test -f public/data/index/historical_race_classes.json
           test -d public/data/features
           FEATURE_COUNT="$(find public/data/features -type f -name '*.json' | wc -l)"
           echo "feature_files=$FEATURE_COUNT"
