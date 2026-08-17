@@ -13,6 +13,8 @@ const state = {
   todayByRegno: new Map(),
   reverseVenue: localStorage.getItem("wake_reverse_venue") || "ALL",
   rankingVenue: localStorage.getItem("wake_ranking_venue") || "ALL",
+  // VENUE = 選択場での過去成績 / ALL = 全場での過去成績
+  rankingBasis: localStorage.getItem("wake_ranking_basis") || "VENUE",
 };
 
 const KIMARITE = [
@@ -64,6 +66,7 @@ const GUIDE_ITEMS = [
   ["差され耐性", "自分より外の選手が「差し」で1着になった時に、自分が何着まで残したかを見る直近1年の実測データです。1件から表示し、8件未満は参考値として明示します。"],
   ["本日出走のみ", "本日レースに出走予定の選手だけに絞る機能です。場フィルターと組み合わせると、その場に本日出走する選手だけに絞ります。"],
   ["場フィルター", "選択した場での過去成績だけを使って逆引き・ランキングを作り直します。本日出走のみON時は、本日開催している場だけを選べます。"],
+  ["ランキング成績基準", "「選択場の成績」はその場での過去成績で順位付け。「全場の成績」は全国24場を通した過去成績で順位付けし、選んだ場に本日出走する選手だけを抽出できます。"],
 ];
 
 const $ = (s, root = document) => root.querySelector(s);
@@ -110,24 +113,60 @@ function todayEntry(regno) {
   return state.todayByRegno.get(Number(regno)) || null;
 }
 
-function todayRaceLabel(regno) {
+function todayRaceLabel(regno, placeNo = "ALL") {
   const row = todayEntry(regno);
   if (!row?.entries?.length) return "";
+
   const byPlace = new Map();
   for (const e of row.entries) {
     const p = Number(e.place_no);
+    if (placeNo !== "ALL" && Number(placeNo) !== p) continue;
     if (!byPlace.has(p)) byPlace.set(p, []);
     byPlace.get(p).push(Number(e.race_no));
   }
+
   return [...byPlace.entries()].map(([p, races]) => {
     const uniq = [...new Set(races)].sort((a,b) => a-b);
     return `${placeNames[p] || `${p}場`} ${uniq.map((r)=>`${r}R`).join("・")}`;
   }).join(" / ");
 }
 
-function todayInline(regno) {
-  const label = todayRaceLabel(regno);
+function todayInline(regno, placeNo = "ALL") {
+  const label = todayRaceLabel(regno, placeNo);
   return label ? `<div class="today-inline">本日 ${esc(label)}</div>` : "";
+}
+
+function earliestTodayRaceNo(regno, placeNo = "ALL") {
+  const row = todayEntry(regno);
+  if (!row?.entries?.length) return Infinity;
+
+  const raceNos = row.entries
+    .filter((e) =>
+      placeNo === "ALL" || Number(e.place_no) === Number(placeNo)
+    )
+    .map((e) => Number(e.race_no))
+    .filter(Number.isFinite);
+
+  return raceNos.length ? Math.min(...raceNos) : Infinity;
+}
+
+function sortTodayRankingByRace(rows, placeNo, data) {
+  const metricSorted = sortRankingRows(rows, data);
+
+  // 本日出走 + 特定場の時は、その場の出走Rが早い順。
+  // 同じRなら元のランキング順位を維持する。
+  if (!state.todayOnly || placeNo === "ALL") return metricSorted;
+
+  const metricOrder = new Map(
+    metricSorted.map((r, i) => [Number(r.regno), i])
+  );
+
+  return [...metricSorted].sort((a,b) =>
+    earliestTodayRaceNo(a.regno, placeNo)
+      - earliestTodayRaceNo(b.regno, placeNo)
+    || (metricOrder.get(Number(a.regno)) ?? Infinity)
+      - (metricOrder.get(Number(b.regno)) ?? Infinity)
+  );
 }
 
 function todayFilterControl() {
@@ -601,7 +640,7 @@ function reverseFilters() {
 
       <div class="sub-filter-row">
         ${todayFilterControl()}
-        ${state.todayOnly ? `<span class="sub-filter-note">本日の出走予定選手だけに絞り込み中</span>` : ""}
+        ${state.todayOnly ? `<span class="sub-filter-note">本日出走時は、特定場を選ぶと出走Rの早い順に表示</span>` : ""}
       </div>
 
       <div id="reverseResult" class="table-wrap"><div class="empty">条件を読み込み中…</div></div>
@@ -840,8 +879,15 @@ function rankingView() {
           <select id="rankingFile">${rankingDefs.map(([f,n])=>`<option value="${f}">${n}</option>`).join("")}</select>
         </div>
         <div class="field">
-          <label>場（本日開催）</label>
+          <label>出走場（本日開催）</label>
           <select id="rankingVenue">${venueOptions({mode:"ranking",selected:state.rankingVenue}).html}</select>
+        </div>
+        <div class="field">
+          <label>ランキング成績基準 <button class="mini-help" data-guide-open type="button">?</button></label>
+          <select id="rankingBasis">
+            <option value="VENUE" ${state.rankingBasis === "VENUE" ? "selected" : ""}>選択場の成績</option>
+            <option value="ALL" ${state.rankingBasis === "ALL" ? "selected" : ""}>全場の成績</option>
+          </select>
         </div>
         <div class="field">
           <label>最低走数</label>
@@ -875,12 +921,26 @@ function updateRankingDescription() {
   const file = $("#rankingFile")?.value;
   const box = $("#rankingDescription");
   if (!box || !file) return;
+
+  const venueValue = $("#rankingVenue")?.value || "ALL";
   const venueLabel =
     $("#rankingVenue")?.selectedOptions?.[0]?.textContent || "全場";
+  const requestedBasis = $("#rankingBasis")?.value || state.rankingBasis || "VENUE";
+  const effectiveBasis = venueValue === "ALL" ? "ALL" : requestedBasis;
+  const basisLabel = effectiveBasis === "ALL"
+    ? "全場成績"
+    : `${venueLabel}成績`;
+
   box.innerHTML = `
     <strong>${esc($("#rankingFile").selectedOptions[0]?.textContent || "")}</strong>
     <span>${esc(RANKING_DESCRIPTIONS[file] || "選手データを指定条件で比較するランキングです。")}</span>
-    <span class="ranking-venue-context">集計場：${esc(venueLabel)}</span>
+    <div class="ranking-context-row">
+      <span class="ranking-venue-context">出走場：${esc(venueLabel)}</span>
+      <span class="ranking-basis-context">順位基準：${esc(basisLabel)}</span>
+      ${state.todayOnly && venueValue !== "ALL"
+        ? `<span class="ranking-order-context">表示順：${esc(venueLabel)}の出走Rが早い順</span>`
+        : ""}
+    </div>
   `;
 }
 
@@ -1194,31 +1254,47 @@ async function loadRanking() {
   const minN = Math.max(1, Number($("#rankMinN").value || 30));
   const placeValue = $("#rankingVenue")?.value || "ALL";
   const placeNo = placeValue === "ALL" ? "ALL" : Number(placeValue);
+  const requestedBasis = $("#rankingBasis")?.value || state.rankingBasis || "VENUE";
+  const effectiveBasis = placeNo === "ALL" ? "ALL" : requestedBasis;
   const box = $("#rankingResult");
 
   state.rankingVenue = String(placeValue);
+  state.rankingBasis = String(requestedBasis);
   localStorage.setItem("wake_ranking_venue", state.rankingVenue);
+  localStorage.setItem("wake_ranking_basis", state.rankingBasis);
+
+  // 「全場」を選択中は選択場成績という概念がないため、表示上も全場へ固定。
+  const basisSelect = $("#rankingBasis");
+  if (basisSelect) {
+    basisSelect.disabled = placeNo === "ALL";
+    if (placeNo === "ALL") basisSelect.value = "ALL";
+  }
 
   updateRankingDescription();
 
   try {
     let data;
-    if (placeNo === "ALL") {
+
+    if (effectiveBasis === "ALL") {
+      // 全場成績ランキングをそのまま使用。
+      // 本日出走ON + 特定場なら「全場で強い選手のうち、その場に今日出る選手」になる。
       data = await getJson(`${DATA_ROOT}/index/${file}`);
+      data.ranking_basis = "ALL";
     } else {
+      // 従来どおり、選択場での過去成績からランキングを作り直す。
       const venueData = await getJson(venueDataPath(placeNo));
       data = buildVenueRankingData(venueData, file);
       data.place_no = placeNo;
       data.place_name = venueData.place_name;
+      data.ranking_basis = "VENUE";
     }
 
-    const rows = sortRankingRows(
-      keepToday(
-        (data.rows || []).filter((r) => Number(r.n) >= minN),
-        placeNo
-      ),
-      data
+    const filtered = keepToday(
+      (data.rows || []).filter((r) => Number(r.n) >= minN),
+      placeNo
     );
+
+    const rows = sortTodayRankingByRace(filtered, placeNo, data);
     const isST = data.metric === "avg_st";
 
     if (!rows.length) {
@@ -1233,7 +1309,7 @@ async function loadRanking() {
           <tbody>${rows.slice(0,200).map((r,i)=>`
             <tr data-open="${r.regno}">
               <td class="rank">${i+1}</td>
-              <td><strong>${esc(r.name)}</strong><div class="meta">#${r.regno}</div>${todayInline(r.regno)}</td>
+              <td><strong>${esc(r.name)}</strong><div class="meta">#${r.regno}</div>${todayInline(r.regno, placeNo)}</td>
               <td>${esc(r.grade||"—")}</td><td>${esc(r.branch||"—")}</td><td>${r.n}</td>
               <td>${fmt(r.avgSt,3)}</td><td class="rate">${fmt(r.adjustedSt,3)}</td><td>${r.f_count ?? 0}</td>
             </tr>`).join("")}
@@ -1244,7 +1320,7 @@ async function loadRanking() {
           <tbody>${rows.slice(0,200).map((r,i)=>`
             <tr data-open="${r.regno}">
               <td class="rank">${i+1}</td>
-              <td><strong>${esc(r.name)}</strong><div class="meta">#${r.regno}</div>${todayInline(r.regno)}</td>
+              <td><strong>${esc(r.name)}</strong><div class="meta">#${r.regno}</div>${todayInline(r.regno, placeNo)}</td>
               <td>${esc(r.grade||"—")}</td><td>${esc(r.branch||"—")}</td><td>${r.n}</td>
               <td class="rate">${fmt(r.avgSt,3)}</td><td>${r.f_count ?? 0}</td>
             </tr>`).join("")}
@@ -1258,7 +1334,7 @@ async function loadRanking() {
           <tbody>${rows.slice(0,200).map((r,i)=>`
             <tr data-open="${r.regno}">
               <td class="rank">${i+1}</td>
-              <td><strong>${esc(r.name)}</strong><div class="meta">#${r.regno}</div>${todayInline(r.regno)}</td>
+              <td><strong>${esc(r.name)}</strong><div class="meta">#${r.regno}</div>${todayInline(r.regno, placeNo)}</td>
               <td>${esc(r.grade||"—")}</td><td>${esc(r.branch||"—")}</td><td>${r.n}</td>
               <td class="rate">${fmt(r.adjRate)}%<div class="meta">（実測 ${fmt(r.rawRate)}%）</div></td>
               <td class="${Number(r.diffPtAdjusted)>=0?"pos":"neg"}">${Number(r.diffPtAdjusted)>=0?"+":""}${fmt(r.diffPtAdjusted)}pt</td>
@@ -1275,7 +1351,7 @@ async function loadRanking() {
             return `
               <tr data-open="${r.regno}">
                 <td class="rank">${i+1}</td>
-                <td><strong>${esc(r.name)}</strong><div class="meta">#${r.regno}</div>${todayInline(r.regno)}</td>
+                <td><strong>${esc(r.name)}</strong><div class="meta">#${r.regno}</div>${todayInline(r.regno, placeNo)}</td>
                 <td>${esc(r.grade||"—")}</td><td>${esc(r.branch||"—")}</td><td>${r.n}</td>
                 <td class="rate">${fmt(r.rawRate)}%<div class="meta">（実測）</div></td>
                 <td>${fmt(r.baselineRate)}%</td>
@@ -1307,6 +1383,13 @@ async function renderRanking() {
   $("#rankingVenue")?.addEventListener("change", () => {
     state.rankingVenue = $("#rankingVenue")?.value || "ALL";
     localStorage.setItem("wake_ranking_venue", state.rankingVenue);
+    updateRankingDescription();
+    loadRanking();
+  });
+
+  $("#rankingBasis")?.addEventListener("change", () => {
+    state.rankingBasis = $("#rankingBasis")?.value || "VENUE";
+    localStorage.setItem("wake_ranking_basis", state.rankingBasis);
     updateRankingDescription();
     loadRanking();
   });
@@ -1409,7 +1492,9 @@ function kimariteDonuts(rows, courseStats) {
     <div class="kimarite-donut-grid">
       ${courses.map((courseRow) => {
         const course = Number(courseRow.course);
+        const startsN = Number(courseRow.n || 0);
         const winN = Number(courseRow.finish_counts?.win || 0);
+        const courseWinRate = startsN > 0 ? 100 * winN / startsN : 0;
         const row = breakdown.get(course);
         const items = [...(row?.items || [])]
           .filter((x) => Number(x.count || 0) > 0)
@@ -1426,7 +1511,11 @@ function kimariteDonuts(rows, courseStats) {
             <div class="kimarite-card-head">
               <div>
                 <strong>${course}コース</strong>
-                <div class="kimarite-sample">出走 n=${Number(courseRow.n || 0)} / <b>1着 n=${winN}</b></div>
+                <div class="kimarite-sample">
+                  <span>出走 <b>${startsN}走</b></span>
+                  <span class="kimarite-sample-sep">/</span>
+                  <span>1着 <b>${winN}回</b></span>
+                </div>
               </div>
             </div>
 
@@ -1439,11 +1528,15 @@ function kimariteDonuts(rows, courseStats) {
               >
                 <div class="kimarite-donut-hole">
                   <span>1着</span>
-                  <b>n=${winN}</b>
+                  <b>${winN}回</b>
                 </div>
               </div>
 
               <div class="kimarite-legend">
+                <div class="kimarite-course-winrate">
+                  <span>このコースの1着率</span>
+                  <strong>${fmt(courseWinRate)}%</strong>
+                </div>
                 ${winN > 0 ? items.map((x) => {
                   const count = Number(x.count || 0);
                   const pctRaw = winN > 0 ? 100 * count / winN : 0;
@@ -1472,8 +1565,8 @@ function kimariteDonuts(rows, courseStats) {
 
     <div class="notice kimarite-note">
       決まり手は<strong>そのコースで1着になったレース</strong>の勝ち方を集計しています。
-      1着が1回でもあれば構成比を表示し、分母は各カードの「1着 n」で確認できます。
-      1着0回でも、そのコースを1走以上していればカードは表示します。
+      各カードに「出走○走 / 1着○回 / 1着率○%」を分けて表示します。
+      1着が1回でもあれば決まり手構成比を表示し、1着0回でもそのコースを1走以上していればカードは表示します。
       <br>※ ドーナツは実測の勝利内構成です。「この選手の意外な一面」の判定は、低母数の偶然を避けるため従来どおり補正値を使用します。
     </div>`;
 }
