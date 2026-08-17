@@ -22,7 +22,7 @@
  *   WAKE_DICTIONARY_OUT_DIR  default: public/data
  */
 
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
 const RAW_SUPABASE_URL = String(process.env.SUPABASE_URL || "").trim();
@@ -31,6 +31,9 @@ const SUPABASE_URL = RAW_SUPABASE_URL
   .replace(/\/rest\/v1$/i, "");
 const SERVICE_KEY = String(process.env.SUPABASE_SERVICE_KEY || "");
 const OUT_DIR = resolve(process.env.WAKE_DICTIONARY_OUT_DIR || "public/data");
+const WOMEN_RACERS_FILE = resolve(
+  process.env.WAKE_WOMEN_RACERS_FILE || "data/women_racers.json"
+);
 const PAGE_SIZE = 1000;
 const RACER_BATCH_SIZE = Math.max(5, Number(process.env.WAKE_RACER_BATCH_SIZE || 50));
 const VENUE_BATCH_SIZE = Math.max(5, Number(process.env.WAKE_VENUE_BATCH_SIZE || 50));
@@ -296,6 +299,22 @@ console.log(`out=${OUT_DIR}`);
 console.log(`course_batch_size=${RACER_BATCH_SIZE}`);
 console.log(`venue_batch_size=${VENUE_BATCH_SIZE}`);
 console.log(`kimarite_batch_size=${KIMARITE_BATCH_SIZE}`);
+
+let womenRacerPayload;
+try {
+  womenRacerPayload = JSON.parse(await readFile(WOMEN_RACERS_FILE, "utf8"));
+} catch (error) {
+  throw new Error(`women racer file unavailable: ${WOMEN_RACERS_FILE}: ${error.message || error}`);
+}
+const womenRegnos = new Set(
+  (womenRacerPayload.racers || [])
+    .map((r) => Number(r.regno))
+    .filter(Number.isInteger)
+);
+if (womenRegnos.size < 200) {
+  throw new Error(`women racer file too small: ${womenRegnos.size}`);
+}
+console.log(`women_racers=${womenRegnos.size}`);
 
 // 基本VIEWも同時実行しない。
 // metadata_v1 は1行でも内部集計が重いため、racers/profile と並列にすると
@@ -593,6 +612,8 @@ for (const racer of racers) {
     kana_katakana,
     grade,
     branch,
+    gender: womenRegnos.has(regno) ? "F" : "M",
+    is_female: womenRegnos.has(regno),
   });
 
   const courses = (byCourse.get(key) || []).map((r) => ({
@@ -741,6 +762,8 @@ for (const racer of racers) {
       kana_katakana,
       grade,
       branch,
+      gender: womenRegnos.has(regno) ? "F" : "M",
+      is_female: womenRegnos.has(regno),
     },
     totals: {
       n: Number(racer.total_starts),
@@ -794,6 +817,9 @@ function gradeOf(regno) {
 }
 function branchOf(regno) {
   return profileByRegno.get(String(regno))?.branch || null;
+}
+function isFemale(regno) {
+  return womenRegnos.has(Number(regno));
 }
 
 // grade × course と ALL × course の基準値を作る。
@@ -856,6 +882,53 @@ for (const scope of GRADE_SCOPES) {
     baselineJson.grade_course[scope][String(course)] = obj;
   }
 }
+
+// v2.5: 任意の級別・コース・決まり手・女子条件をブラウザ側で
+// 組み合わせられる軽量ランキング素材。1選手1ファイルを大量取得せずに済む。
+const rankingSourceRacers = racers.map((racer) => {
+  const regno = Number(racer.regno);
+  const courses = [];
+  for (let course = 1; course <= 6; course++) {
+    const row = courseRowMap.get(`${regno}|${course}`);
+    if (!row) continue;
+    const kimarite = Object.fromEntries(KIMARITE_KINDS.map((k) => [k.name, 0]));
+    for (const k of kimRowsByCell.get(`${regno}|${course}`) || []) {
+      if (k.kimarite in kimarite) kimarite[k.kimarite] = Number(k.kimarite_n || 0);
+    }
+    courses.push({
+      course,
+      n: Number(row.n || 0),
+      win_n: Number(row.win_n || 0),
+      ren2_n: Number(row.ren2_n || 0),
+      ren3_n: Number(row.ren3_n || 0),
+      avg_st: st(row.avg_st),
+      f_count: Number(row.f_count || 0),
+      l_count: Number(row.l_count || 0),
+      st_missing_count: Number(row.st_missing_count || 0),
+      kimarite,
+    });
+  }
+  return {
+    regno,
+    name: racer.racer_name || "",
+    grade: gradeOf(regno),
+    branch: branchOf(regno),
+    gender: isFemale(regno) ? "F" : "M",
+    is_female: isFemale(regno),
+    courses,
+  };
+});
+
+await writeJson(resolve(OUT_DIR, "index", "ranking_source.json"), {
+  schema_version: 1,
+  generated_at: generatedAt,
+  data_period: period,
+  shrinkage_k: SHRINK_K,
+  women_source: womenRacerPayload.source || "BOAT_RACE_LADIES_INFO",
+  women_count: womenRegnos.size,
+  baselines: baselineJson.grade_course,
+  racers: rankingSourceRacers,
+});
 
 
 // ============================================================================
@@ -975,6 +1048,8 @@ for (let placeNo = 1; placeNo <= 24; placeNo++) {
         name: baseRacer?.racer_name || "",
         grade: gradeOf(regno),
         branch: branchOf(regno),
+        gender: isFemale(regno) ? "F" : "M",
+        is_female: isFemale(regno),
         courses: [],
       });
     }
@@ -1197,6 +1272,8 @@ function baseEntry(racer, acc) {
     name: racer.racer_name || "",
     grade: gradeOf(regno),
     branch: branchOf(regno),
+    gender: isFemale(regno) ? "F" : "M",
+    is_female: isFemale(regno),
     n: acc.starts,
   };
 }
@@ -1221,13 +1298,16 @@ async function writeRanking(filename, title, rows, sort, extra = {}) {
   rankingCatalog.push({ file: filename, title, rows: rows.length, sort });
 }
 
-// B級の伏兵: B1/B2、3〜6コース1着率が本人級別基準より高い順。
-{
+// A/B級の伏兵: 3〜6コース1着率が本人級別基準より高い順。
+for (const group of [
+  { key:"a", label:"A級", grades:["A1","A2"] },
+  { key:"b", label:"B級", grades:["B1","B2"] },
+]) {
   const rows = [];
   for (const racer of racers) {
     const regno = Number(racer.regno);
     const grade = gradeOf(regno);
-    if (!["B1", "B2"].includes(grade)) continue;
+    if (!group.grades.includes(grade)) continue;
 
     const coursesWanted = [3,4,5,6];
     const a = aggregateRacer(regno, coursesWanted);
@@ -1257,11 +1337,11 @@ async function writeRanking(filename, title, rows, sort, extra = {}) {
     Number(b.n) - Number(a.n)
   );
   await writeRanking(
-    "ranking_b_attackers.json",
-    "B級の伏兵",
+    `ranking_${group.key}_attackers.json`,
+    `${group.label}の伏兵`,
     rows,
     "diffPtAdjusted_desc",
-    { grades: ["B1","B2"], courses: [3,4,5,6], metric: "win_rate" }
+    { grades: group.grades, courses: [3,4,5,6], metric: "win_rate" }
   );
 }
 
@@ -1269,9 +1349,10 @@ async function writeRanking(filename, title, rows, sort, extra = {}) {
 for (const grade of GRADES) {
   const gradeRacers = racers.filter((r) => gradeOf(Number(r.regno)) === grade);
 
-  // まくり職人 / 差し名人
+  // まくり職人 / まくり差し巧者 / 差し名人
   for (const kind of [
     { name: "まくり", slug: "makuri", title: "まくり職人" },
+    { name: "まくり差し", slug: "makurizashi", title: "まくり差し巧者" },
     { name: "差し", slug: "sashi", title: "差し名人" },
   ]) {
     const rows = [];
@@ -1307,6 +1388,40 @@ for (const grade of GRADES) {
       rows,
       "adjRate_desc",
       { grade, kimarite: kind.name, metric: "kimarite_win_rate_per_start" }
+    );
+  }
+
+  // 紐推し = 全コース3連対率。B級だけでなくA級も同じ条件で出力する。
+  {
+    const rows = [];
+    for (const racer of gradeRacers) {
+      const regno = Number(racer.regno);
+      const coursesWanted = [1,2,3,4,5,6];
+      const a = aggregateRacer(regno, coursesWanted);
+      if (!a.starts) continue;
+      const baselineRate = weightedBaselinePct(
+        grade, coursesWanted, "ren3_rate", regno
+      );
+      if (baselineRate == null) continue;
+      const rawRate = ratePct(a.ren3, a.starts);
+      const adjRate = shrinkRatePct(a.ren3, a.starts, baselineRate);
+      rows.push({
+        ...baseEntry(racer, a),
+        courses: coursesWanted,
+        ren3: a.ren3,
+        rawRate: pct(rawRate),
+        adjRate: pct(adjRate),
+        baselineRate: pct(baselineRate),
+        diffPtAdjusted: pct(adjRate - baselineRate),
+      });
+    }
+    rows.sort(sortDescAdjusted);
+    await writeRanking(
+      `ranking_ren3_${grade}.json`,
+      `${grade} 紐推し（3連対率）`,
+      rows,
+      "adjRate_desc",
+      { grade, courses: [1,2,3,4,5,6], metric: "ren3_rate" }
     );
   }
 

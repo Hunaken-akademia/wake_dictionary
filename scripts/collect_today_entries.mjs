@@ -1,261 +1,218 @@
 #!/usr/bin/env node
-/**
- * WAKE辞典 v2.3.1 本日出走予定コレクタ
- *
- * 公式BOATCAST str3の当日出走表を読み、
- * public/data/today_entries.json を生成する。
- *
- * - 24場 × 1〜12Rを確認
- * - 404/403等はそのレースだけスキップ
- * - 0件でもサイト全体のデプロイは止めない
- * - 読み仮名候補がstr3内に存在するか診断ログも出す
- */
-
-import { mkdir, writeFile } from "node:fs/promises";
+/** WAKE辞典 v2.5 本日出走予定コレクタ */
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
 const OUT_DIR = resolve(process.env.WAKE_DICTIONARY_OUT_DIR || "public/data");
 const OUT_FILE = resolve(OUT_DIR, "today_entries.json");
-const CONCURRENCY = Math.max(
-  1,
-  Math.min(12, Number(process.env.TODAY_ENTRIES_CONCURRENCY || 10))
-);
+const WOMEN_FILE = resolve(process.env.WAKE_WOMEN_RACERS_FILE || "data/women_racers.json");
+const CONCURRENCY = Math.max(1, Math.min(12, Number(process.env.TODAY_ENTRIES_CONCURRENCY || 10)));
+const WAIT_MINUTES = Math.max(0, Number(process.env.TODAY_ENTRIES_WAIT_MINUTES || 75));
+const RETRY_MINUTES = Math.max(1, Number(process.env.TODAY_ENTRIES_RETRY_MINUTES || 10));
+const REQUIRED = String(process.env.TODAY_ENTRIES_REQUIRED || "0") === "1";
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const pad2 = (v) => String(Number(v)).padStart(2, "0");
+const ymd = (s) => String(s).replaceAll("-", "");
 
 function jstDate() {
   const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Tokyo",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
+    timeZone: "Asia/Tokyo", year: "numeric", month: "2-digit", day: "2-digit",
   }).formatToParts(new Date());
   const o = Object.fromEntries(parts.map((p) => [p.type, p.value]));
   return `${o.year}-${o.month}-${o.day}`;
 }
-
-function ymd(s) { return String(s).replaceAll("-", ""); }
-function pad2(v) { return String(Number(v)).padStart(2, "0"); }
-
 function str3Url(date, placeNo, raceNo) {
   const jcd = pad2(placeNo);
-  const rr = pad2(raceNo);
-  return `https://race.boatcast.jp/hp_txt/${jcd}/bc_j_str3_${ymd(date)}_${jcd}_${rr}.txt`;
+  return `https://race.boatcast.jp/hp_txt/${jcd}/bc_j_str3_${ymd(date)}_${jcd}_${pad2(raceNo)}.txt`;
 }
 
-async function fetchText(url, attempts = 3) {
-  let lastError = null;
-
+async function fetchText(url, attempts = 2) {
+  let lastError;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 15000);
     try {
-      // CDNの前日/404キャッシュへ張り付かないよう、日次collectorは毎回URLを変える。
-      const bust = `${url}${url.includes("?") ? "&" : "?"}wake=${Date.now()}_${attempt}`;
-      const res = await fetch(bust, {
-        signal: controller.signal,
-        cache: "no-store",
+      const res = await fetch(`${url}?wake=${Date.now()}_${attempt}`, {
+        signal: controller.signal, cache: "no-store",
         headers: {
-          "user-agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 WAKE-Dictionary/2.3.1",
-          accept: "text/plain,text/html,*/*",
-          referer: "https://race.boatcast.jp/",
-          "cache-control": "no-cache",
-          pragma: "no-cache",
+          "user-agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 WAKE-Dictionary/2.5",
+          accept: "text/plain,text/html,*/*", referer: "https://race.boatcast.jp/",
+          "cache-control": "no-cache", pragma: "no-cache",
         },
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) throw new Error(`HTTP_${res.status}`);
       const text = await res.text();
-      if (!text || !String(text).trim()) throw new Error("empty body");
+      if (!text.trim()) throw new Error("EMPTY_BODY");
       return text;
-    } catch (e) {
-      lastError = e;
-      if (attempt < attempts) {
-        await new Promise((r) => setTimeout(r, 700 * attempt));
-      }
-    } finally {
-      clearTimeout(timer);
-    }
+    } catch (error) {
+      lastError = error;
+      if (attempt < attempts) await sleep(700 * attempt);
+    } finally { clearTimeout(timer); }
   }
-
-  throw lastError || new Error("fetch failed");
+  throw lastError || new Error("FETCH_FAILED");
 }
 
-function normalizeRaw(raw) {
-  return String(raw || "")
-    .replace(/\r/g, "\n")
-    .replace(/\\n/g, "\n");
-}
-
+function normalizeRaw(raw) { return String(raw || "").replace(/\r/g, "\n").replace(/\\n/g, "\n"); }
 function kanaCandidate(columns) {
-  // 位置は決め打ちしない。既知のname/branch/grade以外から
-  // ひらがな/カタカナ主体の値だけを「診断候補」として拾う。
   const out = [];
   for (let i = 2; i < Math.min(columns.length, 12); i++) {
     const v = String(columns[i] || "").trim();
     if (!v || /^(A1|A2|B1|B2)$/.test(v)) continue;
-    if (v.length < 2 || v.length > 24) continue;
-    if (/^[ぁ-ゖァ-ヶー・\s]+$/.test(v)) out.push({ column: i, value: v });
+    if (v.length >= 2 && v.length <= 24 && /^[ぁ-ゖァ-ヶー・\s]+$/.test(v)) out.push({column:i,value:v});
   }
   return out;
 }
-
 function parseStr3(raw, placeNo, raceNo, readingDiag) {
   const rows = [];
   for (const line of normalizeRaw(raw).split(/\n+/)) {
     if (!/^\d{4}\t/.test(line)) continue;
     const c = line.split("\t").map((x) => String(x || "").trim());
     if (c.length < 6) continue;
-
     const regno = Number(c[0]);
     if (!Number.isFinite(regno) || regno <= 0) continue;
-
-    rows.push({
-      regno,
-      racer_name: c[1] || null,
-      place_no: Number(placeNo),
-      race_no: Number(raceNo),
-    });
-
+    rows.push({regno,racer_name:c[1]||null,place_no:Number(placeNo),race_no:Number(raceNo)});
     if (readingDiag.samples.length < 8) {
       const cand = kanaCandidate(c);
       if (cand.length) {
         readingDiag.rowsWithCandidate++;
-        readingDiag.samples.push({
-          regno,
-          name: c[1] || null,
-          candidates: cand,
-        });
+        readingDiag.samples.push({regno,name:c[1]||null,candidates:cand});
       }
     }
   }
   return rows;
 }
 
-async function main() {
-  const date = jstDate();
-  console.log(`today_entries_date=${date}`);
-  console.log(`concurrency=${CONCURRENCY}`);
-
-  const readingDiag = { rowsWithCandidate: 0, samples: [] };
+async function collectAttempt(date, fullScan = false) {
+  const readingDiag = {rowsWithCandidate:0,samples:[]};
   const racerMap = new Map();
+  const errorCounts = new Map();
   let successRaces = 0;
   let skippedRaces = 0;
-
   function addRows(rows) {
     for (const r of rows) {
-      if (!racerMap.has(r.regno)) {
-        racerMap.set(r.regno, { regno: r.regno, name: r.racer_name, entries: [] });
-      }
+      if (!racerMap.has(r.regno)) racerMap.set(r.regno,{regno:r.regno,name:r.racer_name,entries:[]});
       const target = racerMap.get(r.regno);
       const key = `${r.place_no}|${r.race_no}`;
-      if (!target.entries.some((e) => `${e.place_no}|${e.race_no}` === key)) {
-        target.entries.push({ place_no: r.place_no, race_no: r.race_no });
-      }
+      if (!target.entries.some((e)=>`${e.place_no}|${e.race_no}`===key)) target.entries.push({place_no:r.place_no,race_no:r.race_no});
     }
   }
-
-  async function runJobs(jobs) {
+  async function runJobs(jobs, fetchAttempts = 2) {
     let cursor = 0;
     async function worker() {
       while (true) {
-        const i = cursor++;
-        if (i >= jobs.length) return;
-        const job = jobs[i];
+        const job = jobs[cursor++];
+        if (!job) return;
         try {
-          const raw = await fetchText(str3Url(date, job.placeNo, job.raceNo));
-          const rows = parseStr3(raw, job.placeNo, job.raceNo, readingDiag);
+          const rows = parseStr3(await fetchText(str3Url(date,job.placeNo,job.raceNo),fetchAttempts),job.placeNo,job.raceNo,readingDiag);
           if (!rows.length) { skippedRaces++; continue; }
-          successRaces++;
-          addRows(rows);
-        } catch {
+          successRaces++; addRows(rows);
+        } catch (error) {
           skippedRaces++;
+          const key = String(error?.message || error || "UNKNOWN");
+          errorCounts.set(key,(errorCounts.get(key)||0)+1);
         }
       }
     }
-    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, jobs.length || 1) }, () => worker()));
+    await Promise.all(Array.from({length:Math.min(CONCURRENCY,jobs.length||1)},()=>worker()));
   }
-
-  // 1Rだけの一時404/配信遅延で開催場ごと落とさないよう、
-  // 24場の1R・2Rを先に確認する。
-  const probeJobs = Array.from({ length: 24 }, (_, i) => i + 1)
-    .flatMap((placeNo) => [
-      { placeNo, raceNo: 1 },
-      { placeNo, raceNo: 2 },
+  if (fullScan) {
+    // 全288URLを空振りさせない。各場の序盤・中盤・終盤だけを1回確認し、
+    // 1件でも見つかった開催場だけ残り9Rを取得する。
+    const finalProbeRaces = [1,6,12];
+    await runJobs(Array.from({length:24},(_,i)=>i+1).flatMap((placeNo)=>
+      finalProbeRaces.map((raceNo)=>({placeNo,raceNo}))),1);
+    const active = [...new Set([...racerMap.values()].flatMap((r)=>r.entries.map((e)=>e.place_no)))];
+    if (active.length) await runJobs(active.flatMap((placeNo)=>
+      [2,3,4,5,7,8,9,10,11].map((raceNo)=>({placeNo,raceNo}))));
+  } else {
+    const probe = Array.from({length:24},(_,i)=>i+1).flatMap((placeNo)=>[
+      {placeNo,raceNo:1},{placeNo,raceNo:2},
     ]);
-  await runJobs(probeJobs);
-
-  let activePlaces = [...new Set(
-    [...racerMap.values()].flatMap((r) => r.entries.map((e) => e.place_no))
-  )].sort((a,b) => a-b);
-
-  // 万一probeが全滅した場合は、そのまま「0人」でデプロイせず、
-  // 24場×1〜12Rを1回だけ総当たりして復旧を試みる。
-  if (!activePlaces.length) {
-    console.warn("probe returned 0 active places; retrying full 24x12 scan");
-    const fullJobs = Array.from({ length: 24 }, (_, i) => i + 1)
-      .flatMap((placeNo) =>
-        Array.from({ length: 12 }, (_, i) => ({ placeNo, raceNo: i + 1 }))
-      );
-    await runJobs(fullJobs);
-    activePlaces = [...new Set(
-      [...racerMap.values()].flatMap((r) => r.entries.map((e) => e.place_no))
-    )].sort((a,b) => a-b);
-  } else {
-    // probe済みの1R/2Rは除き、3〜12Rだけ取得。
-    const remainingJobs = activePlaces.flatMap((placeNo) =>
-      Array.from({ length: 10 }, (_, i) => ({ placeNo, raceNo: i + 3 }))
-    );
-    console.log(`active_places=${activePlaces.length}`);
-    console.log(`jobs_total=${probeJobs.length + remainingJobs.length}`);
-    await runJobs(remainingJobs);
+    await runJobs(probe);
+    const active = [...new Set([...racerMap.values()].flatMap((r)=>r.entries.map((e)=>e.place_no)))];
+    if (active.length) await runJobs(active.flatMap((placeNo)=>
+      Array.from({length:10},(_,i)=>({placeNo,raceNo:i+3}))));
   }
-
-  const racers = [...racerMap.values()]
-    .map((r) => ({
-      ...r,
-      entries: r.entries.sort(
-        (a,b) => a.place_no - b.place_no || a.race_no - b.race_no
-      ),
-    }))
-    .sort((a,b) => a.regno - b.regno);
-
-  const places = [...new Set(
-    racers.flatMap((r) => r.entries.map((e) => Number(e.place_no)))
-  )].sort((a,b) => a-b);
-
-  const payload = {
-    schema_version: 1,
-    date,
-    generated_at: new Date().toISOString(),
-    source: "BOATCAST_STR3",
-    status: racers.length ? "ok" : "unavailable",
-    racer_count: racers.length,
-    successful_races: successRaces,
-    skipped_races: skippedRaces,
-    places,
-    racers,
+  return {
+    racers:[...racerMap.values()],successRaces,skippedRaces,readingDiag,
+    errors:Object.fromEntries([...errorCounts.entries()].sort()),
   };
-
-  await mkdir(dirname(OUT_FILE), { recursive: true });
-  await writeFile(OUT_FILE, JSON.stringify(payload), "utf8");
-
-  console.log(`today_racer_count=${racers.length}`);
-  console.log(`today_successful_races=${successRaces}`);
-  console.log(`today_skipped_races=${skippedRaces}`);
-  console.log(`today_places=${places.length}`);
-
-  // かな検索実装前の診断。
-  // ここに一貫した読み仮名列が見つかれば、次版で全1649人分を正式取得する。
-  console.log(`kana_candidate_sample_count=${readingDiag.samples.length}`);
-  if (readingDiag.samples.length) {
-    console.log(`kana_candidate_samples=${JSON.stringify(readingDiag.samples)}`);
-  } else {
-    console.log("kana_candidate_samples=[]");
-  }
-
-  if (!racers.length) {
-    throw new Error(
-      `today entries unavailable for JST ${date}: 0 racers after probe + fallback scan`
-    );
-  }
 }
 
+async function womenSet() {
+  try {
+    const data = JSON.parse(await readFile(WOMEN_FILE,"utf8"));
+    return new Set((data.racers||[]).map((r)=>Number(r.regno)).filter(Number.isInteger));
+  } catch { return new Set(); }
+}
+function enrichRaceClass(racers,women) {
+  const participants = new Map();
+  for (const racer of racers) for (const e of racer.entries||[]) {
+    const key = `${e.place_no}|${e.race_no}`;
+    if (!participants.has(key)) participants.set(key,new Set());
+    participants.get(key).add(Number(racer.regno));
+  }
+  const raceClass = new Map();
+  for (const [key,ids] of participants) {
+    raceClass.set(key,women.size && [...ids].every((id)=>women.has(id)) ? "WOMEN" : "MIXED");
+  }
+  for (const racer of racers) {
+    racer.gender = women.has(Number(racer.regno)) ? "F" : "M";
+    racer.is_female = women.has(Number(racer.regno));
+    racer.entries = (racer.entries||[]).map((e)=>({...e,race_class:raceClass.get(`${e.place_no}|${e.race_no}`)||"UNKNOWN"}))
+      .sort((a,b)=>a.place_no-b.place_no||a.race_no-b.race_no);
+  }
+  return raceClass;
+}
+
+async function main() {
+  const date = jstDate();
+  const deadline = Date.now() + WAIT_MINUTES * 60000;
+  console.log(`today_entries_date=${date}`);
+  console.log(`concurrency=${CONCURRENCY}`);
+  console.log(`wait_minutes=${WAIT_MINUTES}`);
+  let result;
+  let round = 0;
+  do {
+    round++;
+    result = await collectAttempt(date,false);
+    console.log(`probe_round=${round} racers=${result.racers.length} success=${result.successRaces} errors=${JSON.stringify(result.errors)}`);
+    if (result.racers.length || Date.now() >= deadline) break;
+    const waitMs = Math.min(RETRY_MINUTES*60000,Math.max(0,deadline-Date.now()));
+    if (waitMs > 0) {
+      console.warn(`today entries not published; retrying in ${Math.ceil(waitMs/60000)} minutes`);
+      await sleep(waitMs);
+    }
+  } while (Date.now() < deadline);
+  if (!result?.racers?.length) {
+    console.warn("probe remained empty; running final 24-place x 3-race fallback scan");
+    result = await collectAttempt(date,true);
+  }
+  const women = await womenSet();
+  const racers = (result.racers||[]).sort((a,b)=>a.regno-b.regno);
+  const raceClass = enrichRaceClass(racers,women);
+  const places = [...new Set(racers.flatMap((r)=>r.entries.map((e)=>Number(e.place_no))))].sort((a,b)=>a-b);
+  const classCounts = {WOMEN:0,MIXED:0,UNKNOWN:0};
+  for (const value of raceClass.values()) classCounts[value]=(classCounts[value]||0)+1;
+  const payload = {
+    schema_version:2,date,generated_at:new Date().toISOString(),source:"BOATCAST_STR3",
+    status:racers.length?"ok":"unavailable",racer_count:racers.length,
+    successful_races:result.successRaces,skipped_races:result.skippedRaces,places,
+    race_class_counts:classCounts,fetch_errors:result.errors,racers,
+  };
+  await mkdir(dirname(OUT_FILE),{recursive:true});
+  await writeFile(OUT_FILE,JSON.stringify(payload),"utf8");
+  console.log(`today_racer_count=${racers.length}`);
+  console.log(`today_successful_races=${result.successRaces}`);
+  console.log(`today_skipped_races=${result.skippedRaces}`);
+  console.log(`today_places=${places.length}`);
+  console.log(`today_race_classes=${JSON.stringify(classCounts)}`);
+  console.log(`kana_candidate_sample_count=${result.readingDiag.samples.length}`);
+  console.log(`kana_candidate_samples=${JSON.stringify(result.readingDiag.samples)}`);
+  if (!racers.length) {
+    const message = `today entries unavailable for JST ${date} after ${WAIT_MINUTES} minute wait`;
+    if (REQUIRED) throw new Error(message);
+    console.warn(`WARNING: ${message}; core dictionary deployment will continue`);
+  }
+}
 await main();

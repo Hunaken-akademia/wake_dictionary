@@ -15,6 +15,11 @@ const state = {
   rankingVenue: localStorage.getItem("wake_ranking_venue") || "ALL",
   // VENUE = 選択場での過去成績 / ALL = 全場での過去成績
   rankingBasis: localStorage.getItem("wake_ranking_basis") || "VENUE",
+  rankingType: localStorage.getItem("wake_ranking_type") || "attack",
+  rankingGrade: localStorage.getItem("wake_ranking_grade") || "B",
+  rankingCourse: localStorage.getItem("wake_ranking_course") || "DEFAULT",
+  rankingFemaleOnly: localStorage.getItem("wake_ranking_female") === "1",
+  rankingRaceClass: localStorage.getItem("wake_ranking_race_class") || "ALL",
 };
 
 const KIMARITE = [
@@ -67,6 +72,9 @@ const GUIDE_ITEMS = [
   ["本日出走のみ", "本日レースに出走予定の選手だけに絞る機能です。場フィルターと組み合わせると、その場に本日出走する選手だけに絞ります。"],
   ["場フィルター", "選択した場での過去成績だけを使って逆引き・ランキングを作り直します。本日出走のみON時は、本日開催している場だけを選べます。"],
   ["ランキング成績基準", "「選択場の成績」はその場での過去成績で順位付け。「全場の成績」は全国24場を通した過去成績で順位付けし、選んだ場に本日出走する選手だけを抽出できます。"],
+  ["紐推し", "1着固定ではなく2・3着候補として見つけやすいよう、指定コースの3連対率が高い選手を比較します。"],
+  ["女子選手", "公式女子レーサー名鑑の現役選手だけに絞ります。B級の伏兵など他の条件とも同時に使えます。"],
+  ["本日の出走区分", "本日の出走表を6艇単位で判定し、女子選手だけのレースと男女混合レースを分けます。選ぶと本日出走選手に自動的に絞られます。"],
 ];
 
 const $ = (s, root = document) => root.querySelector(s);
@@ -232,6 +240,15 @@ function todayAtPlace(regno, placeNo = "ALL") {
 function keepToday(rows, placeNo = "ALL") {
   if (!state.todayOnly) return rows;
   return rows.filter((r) => todayAtPlace(r.regno, placeNo));
+}
+
+function todayAtRaceClass(regno, raceClass, placeNo = "ALL") {
+  if (!raceClass || raceClass === "ALL") return true;
+  const row = todayEntry(regno);
+  return Boolean(row?.entries?.some((e) =>
+    (placeNo === "ALL" || Number(e.place_no) === Number(placeNo))
+      && String(e.race_class || "UNKNOWN") === raceClass
+  ));
 }
 
 function venueOptions({mode="reverse", selected="ALL"} = {}) {
@@ -1370,7 +1387,7 @@ async function loadRanking() {
   }
 }
 
-async function renderRanking() {
+async function renderRankingLegacy() {
   shell(rankingView());
   bindGlobalControls();
 
@@ -1403,6 +1420,277 @@ async function renderRanking() {
   bindTodayToggle(() => renderRanking());
   updateRankingDescription();
   loadRanking();
+}
+
+// ============================================================================
+// v2.5 組み合わせランキング
+// ============================================================================
+const RANKING_TYPES_V25 = [
+  ["attack", "伏兵（1着率の基準差）"],
+  ["ren3", "紐推し（3連対率）"],
+  ["makuri", "まくり職人"],
+  ["makurizashi", "まくり差し巧者"],
+  ["sashi", "差し名人"],
+  ["in_strong", "イン最強"],
+  ["in_unstable", "イン不安定"],
+  ["dash", "ダッシュ巧者（3連対率）"],
+  ["start", "スタート巧者"],
+  ["start_no_f", "スタート巧者（Fなし）"],
+];
+
+const RANKING_DESC_V25 = {
+  attack:"指定級別・コースの1着率が、同じ級別の基準をどれだけ上回るかで伏兵候補を探します。",
+  ren3:"指定級別・コースで3着以内に残る率が高い選手を、舟券の紐候補として比較します。",
+  makuri:"指定コースから、まくりで1着になった率を比較します。",
+  makurizashi:"指定コースから、まくり差しで1着になった率を比較します。",
+  sashi:"指定コースから、差しで1着になった率を比較します。",
+  in_strong:"逃げで1着になった率が高い順です。通常は1コースを選びます。",
+  in_unstable:"逃げで1着になった率が低い順です。通常は1コース・最低50走を推奨します。",
+  dash:"指定コースの3連対率を比較します。既定は4〜6コースです。",
+  start:"指定コースの平均STを比較します。数字が小さいほど速い表示です。",
+  start_no_f:"集計期間のFが0回の選手だけで、指定コースの平均STを比較します。",
+};
+
+function rankingDefaultCoursesV25(type) {
+  if (type === "attack") return [3,4,5,6];
+  if (type === "dash") return [4,5,6];
+  if (type === "in_strong" || type === "in_unstable") return [1];
+  return [1,2,3,4,5,6];
+}
+function rankingCoursesV25(type, value) {
+  if (!value || value === "DEFAULT") return rankingDefaultCoursesV25(type);
+  if (value === "ALL") return [1,2,3,4,5,6];
+  if (value === "3-6") return [3,4,5,6];
+  if (value === "4-6") return [4,5,6];
+  const n = Number(value);
+  return n >= 1 && n <= 6 ? [n] : rankingDefaultCoursesV25(type);
+}
+function rankingGradesV25(value) {
+  if (value === "A") return ["A1","A2"];
+  if (value === "B") return ["B1","B2"];
+  if (["A1","A2","B1","B2"].includes(value)) return [value];
+  return ["A1","A2","B1","B2"];
+}
+function rankingCourseLabelV25(courses) {
+  if (courses.length === 6) return "全コース";
+  if (courses.join(",") === "3,4,5,6") return "3〜6コース";
+  if (courses.join(",") === "4,5,6") return "4〜6コース";
+  return courses.map((c)=>`${c}コース`).join("・");
+}
+function rankingGenderBadgeV25(row) {
+  return row.is_female || row.gender === "F" ? `<span class="female-badge">女子</span>` : "";
+}
+
+function buildRankingDataV25(data, {type, gradeValue, courseValue, femaleOnly}) {
+  const grades = rankingGradesV25(gradeValue);
+  const courses = rankingCoursesV25(type, courseValue);
+  const racers = data?.racers || [];
+  const shrinkK = Number(data?.shrinkage_k || 15);
+  const rows = [];
+  const isST = type === "start" || type === "start_no_f";
+  const kimarite = type === "makuri" ? "まくり"
+    : type === "makurizashi" ? "まくり差し"
+      : type === "sashi" ? "差し"
+        : (type === "in_strong" || type === "in_unstable") ? "逃げ" : null;
+
+  for (const racer of racers) {
+    if (!grades.includes(racer.grade)) continue;
+    if (femaleOnly && !(racer.is_female || racer.gender === "F")) continue;
+    const acc = aggregateVenueRacer(racer,courses);
+    if (!acc.starts) continue;
+    const base = {
+      regno:Number(racer.regno), name:racer.name||"", grade:racer.grade||null,
+      branch:racer.branch||null, gender:racer.gender||null,
+      is_female:Boolean(racer.is_female || racer.gender === "F"),
+    };
+
+    if (isST) {
+      if (!acc.validStN || (type === "start_no_f" && acc.fCount !== 0)) continue;
+      const baselineAvgSt = weightedVenueStBaseline(data,racer.grade,racer,courses);
+      if (baselineAvgSt == null) continue;
+      const avgSt = acc.stSum / acc.validStN;
+      const adjustedSt = shrinkMeanClient(acc.stSum,acc.validStN,baselineAvgSt,shrinkK);
+      rows.push({...base,n:acc.validStN,total_starts:acc.starts,avgSt,adjustedSt,
+        baselineAvgSt,diffAdjusted:Number(adjustedSt)-Number(baselineAvgSt),
+        f_count:acc.fCount,l_count:acc.lCount});
+      continue;
+    }
+
+    let count;
+    let baselineRate;
+    let metric;
+    if (kimarite) {
+      count = acc.kimarite[kimarite];
+      baselineRate = weightedVenueKimariteBaseline(data,racer.grade,racer,courses,kimarite);
+      metric = kimarite === "逃げ" ? "nige_win_rate_per_start" : "kimarite_win_rate_per_start";
+    } else if (type === "ren3" || type === "dash") {
+      count = acc.ren3;
+      baselineRate = weightedVenueBaseline(data,racer.grade,racer,courses,"ren3_rate");
+      metric = "ren3_rate";
+    } else {
+      count = acc.wins;
+      baselineRate = weightedVenueBaseline(data,racer.grade,racer,courses,"win_rate");
+      metric = "win_rate";
+    }
+    if (baselineRate == null) continue;
+    const rawRate = ratePctClient(count,acc.starts);
+    const adjRate = shrinkRatePctClient(count,acc.starts,baselineRate,shrinkK);
+    const row = {...base,n:acc.starts,count,rawRate,adjRate,baselineRate,
+      diffPtAdjusted:Number(adjRate)-Number(baselineRate)};
+    if (type === "attack" && row.diffPtAdjusted <= 0) continue;
+    rows.push(row);
+  }
+
+  return {
+    rows,
+    metric:isST ? "avg_st"
+      : kimarite ? (kimarite === "逃げ" ? "nige_win_rate_per_start" : "kimarite_win_rate_per_start")
+        : (type === "ren3" || type === "dash") ? "ren3_rate" : "win_rate",
+    kimarite,
+    sort:isST ? "adjustedSt_asc"
+      : type === "in_unstable" ? "adjRate_asc"
+        : type === "attack" ? "diffPtAdjusted_desc" : "adjRate_desc",
+    courses,
+    grades,
+  };
+}
+
+function rankingViewV25() {
+  const selected = (value,current) => value===current ? "selected" : "";
+  return `
+    <section class="section shell">
+      <div class="section-title">
+        <div><div class="kicker">RANKINGS</div><h2>WAKEランキング</h2></div>
+        <p>${state.useAdjusted ? "補正値で順位付け" : "実測値で順位付け"}</p>
+      </div>
+      <div class="mode-panel"><div><strong>${modeText()}</strong><p>級別・コース・女子条件を自由に組み合わせて比較できます。</p></div>${adjustedSwitch()}</div>
+      <div class="filters ranking-filters ranking-filters-v25">
+        <div class="field"><label>ランキング</label><select id="rankingType">
+          ${RANKING_TYPES_V25.map(([v,n])=>`<option value="${v}" ${selected(v,state.rankingType)}>${n}</option>`).join("")}
+        </select></div>
+        <div class="field"><label>級別</label><select id="rankingGrade">
+          <option value="ALL" ${selected("ALL",state.rankingGrade)}>全級</option>
+          <option value="A" ${selected("A",state.rankingGrade)}>A級（A1・A2）</option>
+          <option value="B" ${selected("B",state.rankingGrade)}>B級（B1・B2）</option>
+          ${["A1","A2","B1","B2"].map((g)=>`<option ${selected(g,state.rankingGrade)}>${g}</option>`).join("")}
+        </select></div>
+        <div class="field"><label>コース</label><select id="rankingCourse">
+          <option value="DEFAULT" ${selected("DEFAULT",state.rankingCourse)}>ランキング既定</option>
+          <option value="ALL" ${selected("ALL",state.rankingCourse)}>全コース</option>
+          ${[1,2,3,4,5,6].map((c)=>`<option value="${c}" ${selected(String(c),state.rankingCourse)}>${c}コース</option>`).join("")}
+          <option value="3-6" ${selected("3-6",state.rankingCourse)}>3〜6コース</option>
+          <option value="4-6" ${selected("4-6",state.rankingCourse)}>4〜6コース</option>
+        </select></div>
+        <div class="field"><label>出走場（本日開催）</label><select id="rankingVenue">${venueOptions({mode:"ranking",selected:state.rankingVenue}).html}</select></div>
+        <div class="field"><label>ランキング成績基準</label><select id="rankingBasis">
+          <option value="VENUE" ${selected("VENUE",state.rankingBasis)}>選択場の成績</option>
+          <option value="ALL" ${selected("ALL",state.rankingBasis)}>全場の成績</option>
+        </select></div>
+        <div class="field"><label>本日の出走区分</label><select id="rankingRaceClass">
+          <option value="ALL" ${selected("ALL",state.rankingRaceClass)}>指定なし</option>
+          <option value="WOMEN" ${selected("WOMEN",state.rankingRaceClass)}>女子戦</option>
+          <option value="MIXED" ${selected("MIXED",state.rankingRaceClass)}>男女混合戦</option>
+        </select></div>
+        <div class="field"><label>最低走数</label><input id="rankMinN" type="number" min="1" value="${state.rankingType==="in_unstable"?50:30}"></div>
+        <div class="field check-field"><label>選手条件</label><label class="compact-check"><input id="rankingFemaleOnly" type="checkbox" ${state.rankingFemaleOnly?"checked":""}><span>女子選手のみ</span></label></div>
+        <div class="field action-field"><label>&nbsp;</label><button class="primary" id="rankReload">表示</button></div>
+      </div>
+      <div class="sub-filter-row">${todayFilterControl()}<span class="sub-filter-note">女子・女子戦/混合戦・級別・コースは同時指定できます</span></div>
+      <div id="rankingDescription" class="ranking-description"></div>
+      <div id="rankingResult" class="table-wrap"><div class="empty">読み込み中…</div></div>
+      <div class="notice">母数(n)は必ず併記します。女子戦・男女混合戦は本日の出走表に対する分類です。</div>
+    </section>`;
+}
+
+function persistRankingV25() {
+  localStorage.setItem("wake_ranking_type",state.rankingType);
+  localStorage.setItem("wake_ranking_grade",state.rankingGrade);
+  localStorage.setItem("wake_ranking_course",state.rankingCourse);
+  localStorage.setItem("wake_ranking_female",state.rankingFemaleOnly?"1":"0");
+  localStorage.setItem("wake_ranking_race_class",state.rankingRaceClass);
+  localStorage.setItem("wake_ranking_venue",state.rankingVenue);
+  localStorage.setItem("wake_ranking_basis",state.rankingBasis);
+}
+
+async function loadRankingV25() {
+  const box = $("#rankingResult");
+  const type = $("#rankingType")?.value || state.rankingType;
+  const gradeValue = $("#rankingGrade")?.value || state.rankingGrade;
+  const courseValue = $("#rankingCourse")?.value || state.rankingCourse;
+  const femaleOnly = Boolean($("#rankingFemaleOnly")?.checked);
+  const raceClass = $("#rankingRaceClass")?.value || "ALL";
+  const minN = Math.max(1,Number($("#rankMinN")?.value||30));
+  const placeValue = $("#rankingVenue")?.value || "ALL";
+  const placeNo = placeValue === "ALL" ? "ALL" : Number(placeValue);
+  const requestedBasis = $("#rankingBasis")?.value || "VENUE";
+  const effectiveBasis = placeNo === "ALL" ? "ALL" : requestedBasis;
+  Object.assign(state,{rankingType:type,rankingGrade:gradeValue,rankingCourse:courseValue,
+    rankingFemaleOnly:femaleOnly,rankingRaceClass:raceClass,rankingVenue:String(placeValue),rankingBasis:requestedBasis});
+  persistRankingV25();
+
+  try {
+    const source = effectiveBasis === "ALL"
+      ? await getJson(`${DATA_ROOT}/index/ranking_source.json`)
+      : await getJson(venueDataPath(placeNo));
+    const data = buildRankingDataV25(source,{type,gradeValue,courseValue,femaleOnly});
+    let rows = data.rows.filter((r)=>Number(r.n)>=minN);
+    if (state.todayOnly) rows = keepToday(rows,placeNo);
+    if (raceClass !== "ALL") rows = rows.filter((r)=>todayAtRaceClass(r.regno,raceClass,placeNo));
+    rows = sortRankingRows(rows,data);
+    if ((state.todayOnly || raceClass !== "ALL") && placeNo !== "ALL") {
+      const order = new Map(rows.map((r,i)=>[Number(r.regno),i]));
+      rows = [...rows].sort((a,b)=>earliestTodayRaceNo(a.regno,placeNo)-earliestTodayRaceNo(b.regno,placeNo)
+        || (order.get(Number(a.regno))??Infinity)-(order.get(Number(b.regno))??Infinity));
+    }
+
+    const typeLabel = RANKING_TYPES_V25.find(([v])=>v===type)?.[1] || type;
+    const venueLabel = placeNo === "ALL" ? "全場" : placeNames[placeNo];
+    const gradeLabel = $("#rankingGrade")?.selectedOptions?.[0]?.textContent || gradeValue;
+    $("#rankingDescription").innerHTML = `<strong>${esc(typeLabel)}</strong><span>${esc(RANKING_DESC_V25[type]||"")}</span>
+      <div class="ranking-context-row"><span class="ranking-venue-context">${esc(venueLabel)}・${esc(effectiveBasis==="ALL"?"全場成績":"選択場成績")}</span>
+      <span class="ranking-basis-context">${esc(gradeLabel)}・${esc(rankingCourseLabelV25(data.courses))}</span>
+      ${femaleOnly?`<span class="ranking-female-context">女子のみ</span>`:""}
+      ${raceClass!=="ALL"?`<span class="ranking-order-context">本日${raceClass==="WOMEN"?"女子戦":"男女混合戦"}</span>`:""}</div>`;
+
+    if (!rows.length) {
+      box.innerHTML = `<div class="empty">該当データなし${raceClass!=="ALL" && state.todayMetaStatus!=="ok"?"（本日の出走情報を更新待ち）":""}</div>`;
+      return;
+    }
+    const isST = data.metric === "avg_st";
+    const metricLabel = rankingMetricLabel(data);
+    box.innerHTML = `<table><thead><tr><th>#</th><th>選手</th><th>級別</th><th>支部</th><th>母数(n)</th>
+      <th>${isST?"平均ST":esc(metricLabel)}</th>${isST?"<th>F</th>":"<th>基準差</th>"}</tr></thead><tbody>
+      ${rows.slice(0,200).map((r,i)=>`<tr data-open="${r.regno}"><td class="rank">${i+1}</td>
+        <td><strong>${esc(r.name)}</strong>${rankingGenderBadgeV25(r)}<div class="meta">#${r.regno}</div>${todayInline(r.regno,placeNo)}</td>
+        <td>${esc(r.grade||"—")}</td><td>${esc(r.branch||"—")}</td><td>${r.n}</td>
+        ${isST
+          ? `<td class="rate">${fmt(state.useAdjusted?r.adjustedSt:r.avgSt,3)}${state.useAdjusted?`<div class="meta">（実測 ${fmt(r.avgSt,3)}）</div>`:""}</td><td>${r.f_count??0}</td>`
+          : `<td class="rate">${fmt(state.useAdjusted?r.adjRate:r.rawRate)}%${state.useAdjusted?`<div class="meta">（実測 ${fmt(r.rawRate)}%）</div>`:""}</td>
+             <td class="${Number(state.useAdjusted?r.diffPtAdjusted:Number(r.rawRate)-Number(r.baselineRate))>=0?"pos":"neg"}">${fmt(state.useAdjusted?r.diffPtAdjusted:Number(r.rawRate)-Number(r.baselineRate))}pt</td>`}
+      </tr>`).join("")}</tbody></table>`;
+    $$('[data-open]',box).forEach((tr)=>tr.addEventListener("click",()=>{location.hash=`#/racer/${tr.dataset.open}`;}));
+  } catch (error) {
+    box.innerHTML = `<div class="empty error">${esc(error.message||error)}</div>`;
+  }
+}
+
+async function renderRanking() {
+  shell(rankingViewV25());
+  bindGlobalControls();
+  const reload = () => loadRankingV25();
+  ["rankingType","rankingGrade","rankingCourse","rankingVenue","rankingBasis","rankingRaceClass","rankingFemaleOnly"]
+    .forEach((id)=>$(`#${id}`)?.addEventListener("change",()=>{
+      if (id === "rankingType") {
+        const input = $("#rankMinN");
+        if (input) input.value = $("#rankingType")?.value === "in_unstable" ? "50" : "30";
+      }
+      reload();
+    }));
+  let timer;
+  $("#rankMinN")?.addEventListener("input",()=>{clearTimeout(timer);timer=setTimeout(reload,180);});
+  $("#rankReload")?.addEventListener("click",reload);
+  bindTodayToggle(()=>renderRanking());
+  reload();
 }
 
 function courseCards(rows) {

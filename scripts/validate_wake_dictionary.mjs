@@ -321,6 +321,30 @@ try {
   console.log(`[5] B級の伏兵 grade filter: ${bGradeOk?"PASS":"FAIL"} rows=${bAttackers.rows.length}`);
   if (!bGradeOk) failed = true;
 
+  const aAttackers = await readJson("index/ranking_a_attackers.json");
+  const aGradeOk = aAttackers.rows.every((r) => r.grade === "A1" || r.grade === "A2");
+  console.log(`[5] A級の伏兵 grade filter: ${aGradeOk?"PASS":"FAIL"} rows=${aAttackers.rows.length}`);
+  if (!aGradeOk) failed = true;
+
+  const requiredNewRankings = [
+    ...["A1","A2","B1","B2"].flatMap((g) => [
+      `ranking_makurizashi_${g}.json`,
+      `ranking_ren3_${g}.json`,
+    ]),
+  ];
+  const catalogFiles = new Set(rankingCatalog.files.map((x) => x.file));
+  const missingNewRankings = requiredNewRankings.filter((f) => !catalogFiles.has(f));
+  console.log(`[5] v2.5 ranking variants ${missingNewRankings.length===0?"PASS":"FAIL"} missing=${missingNewRankings.length}`);
+  if (missingNewRankings.length) failed = true;
+
+  const rankingSource = await readJson("index/ranking_source.json");
+  const womenRows = (rankingSource.racers || []).filter((r) => r.is_female && r.gender === "F");
+  const sourceSchemaOk = (rankingSource.racers || []).length > 1000
+    && womenRows.length >= 200
+    && (rankingSource.racers || []).every((r) => Array.isArray(r.courses));
+  console.log(`[5] ranking source/gender ${sourceSchemaOk?"PASS":"FAIL"} racers=${rankingSource.racers?.length||0} women=${womenRows.length}`);
+  if (!sourceSchemaOk) failed = true;
+
 } catch (e) {
   console.log(`[5] generated index validation FAIL: ${e.message || e}`);
   failed = true;
