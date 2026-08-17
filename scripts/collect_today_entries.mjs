@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * WAKE辞典 v1.8 本日出走予定コレクタ
+ * WAKE辞典 v2.3.1 本日出走予定コレクタ
  *
  * 公式BOATCAST str3の当日出走表を読み、
  * public/data/today_entries.json を生成する。
@@ -41,23 +41,41 @@ function str3Url(date, placeNo, raceNo) {
   return `https://race.boatcast.jp/hp_txt/${jcd}/bc_j_str3_${ymd(date)}_${jcd}_${rr}.txt`;
 }
 
-async function fetchText(url) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 12000);
-  try {
-    const res = await fetch(url, {
-      signal: controller.signal,
-      headers: {
-        "user-agent": "Mozilla/5.0 WAKE-Dictionary/1.7",
-        accept: "text/plain,text/html,*/*",
-        referer: "https://race.boatcast.jp/",
-      },
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return await res.text();
-  } finally {
-    clearTimeout(timer);
+async function fetchText(url, attempts = 3) {
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15000);
+    try {
+      // CDNの前日/404キャッシュへ張り付かないよう、日次collectorは毎回URLを変える。
+      const bust = `${url}${url.includes("?") ? "&" : "?"}wake=${Date.now()}_${attempt}`;
+      const res = await fetch(bust, {
+        signal: controller.signal,
+        cache: "no-store",
+        headers: {
+          "user-agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 WAKE-Dictionary/2.3.1",
+          accept: "text/plain,text/html,*/*",
+          referer: "https://race.boatcast.jp/",
+          "cache-control": "no-cache",
+          pragma: "no-cache",
+        },
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const text = await res.text();
+      if (!text || !String(text).trim()) throw new Error("empty body");
+      return text;
+    } catch (e) {
+      lastError = e;
+      if (attempt < attempts) {
+        await new Promise((r) => setTimeout(r, 700 * attempt));
+      }
+    } finally {
+      clearTimeout(timer);
+    }
   }
+
+  throw lastError || new Error("fetch failed");
 }
 
 function normalizeRaw(raw) {
@@ -155,21 +173,40 @@ async function main() {
     await Promise.all(Array.from({ length: Math.min(CONCURRENCY, jobs.length || 1) }, () => worker()));
   }
 
-  // まず24場の1Rだけ確認。1Rが存在する場だけを開催場とみなし、
-  // 2〜12Rを取得する。全24場×12R=288リクエストを毎朝叩かない。
-  const probeJobs = Array.from({ length: 24 }, (_, i) => ({ placeNo: i + 1, raceNo: 1 }));
+  // 1Rだけの一時404/配信遅延で開催場ごと落とさないよう、
+  // 24場の1R・2Rを先に確認する。
+  const probeJobs = Array.from({ length: 24 }, (_, i) => i + 1)
+    .flatMap((placeNo) => [
+      { placeNo, raceNo: 1 },
+      { placeNo, raceNo: 2 },
+    ]);
   await runJobs(probeJobs);
 
-  const activePlaces = [...new Set(
+  let activePlaces = [...new Set(
     [...racerMap.values()].flatMap((r) => r.entries.map((e) => e.place_no))
   )].sort((a,b) => a-b);
 
-  const remainingJobs = activePlaces.flatMap((placeNo) =>
-    Array.from({ length: 11 }, (_, i) => ({ placeNo, raceNo: i + 2 }))
-  );
-  console.log(`active_places=${activePlaces.length}`);
-  console.log(`jobs_total=${probeJobs.length + remainingJobs.length}`);
-  await runJobs(remainingJobs);
+  // 万一probeが全滅した場合は、そのまま「0人」でデプロイせず、
+  // 24場×1〜12Rを1回だけ総当たりして復旧を試みる。
+  if (!activePlaces.length) {
+    console.warn("probe returned 0 active places; retrying full 24x12 scan");
+    const fullJobs = Array.from({ length: 24 }, (_, i) => i + 1)
+      .flatMap((placeNo) =>
+        Array.from({ length: 12 }, (_, i) => ({ placeNo, raceNo: i + 1 }))
+      );
+    await runJobs(fullJobs);
+    activePlaces = [...new Set(
+      [...racerMap.values()].flatMap((r) => r.entries.map((e) => e.place_no))
+    )].sort((a,b) => a-b);
+  } else {
+    // probe済みの1R/2Rは除き、3〜12Rだけ取得。
+    const remainingJobs = activePlaces.flatMap((placeNo) =>
+      Array.from({ length: 10 }, (_, i) => ({ placeNo, raceNo: i + 3 }))
+    );
+    console.log(`active_places=${activePlaces.length}`);
+    console.log(`jobs_total=${probeJobs.length + remainingJobs.length}`);
+    await runJobs(remainingJobs);
+  }
 
   const racers = [...racerMap.values()]
     .map((r) => ({
@@ -215,7 +252,9 @@ async function main() {
   }
 
   if (!racers.length) {
-    console.warn("WARNING: today entries were not available; site will deploy without today filter data.");
+    throw new Error(
+      `today entries unavailable for JST ${date}: 0 racers after probe + fallback scan`
+    );
   }
 }
 

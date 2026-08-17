@@ -9,6 +9,7 @@ const state = {
   useAdjusted: localStorage.getItem("wake_use_adjusted") !== "0",
   todayOnly: localStorage.getItem("wake_today_only") === "1",
   todayMeta: null,
+  todayMetaStatus: "loading",
   todayByRegno: new Map(),
   reverseVenue: localStorage.getItem("wake_reverse_venue") || "ALL",
   rankingVenue: localStorage.getItem("wake_ranking_venue") || "ALL",
@@ -68,6 +69,17 @@ const GUIDE_ITEMS = [
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
 const fmt = (v, d = 1) => Number.isFinite(Number(v)) ? Number(v).toFixed(d) : "—";
+function todayJstIso() {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date());
+  const o = Object.fromEntries(parts.map((p) => [p.type, p.value]));
+  return `${o.year}-${o.month}-${o.day}`;
+}
+
 function normalizeSearchText(value) {
   return [...String(value ?? "").normalize("NFKC")]
     .map((ch) => {
@@ -119,7 +131,15 @@ function todayInline(regno) {
 }
 
 function todayFilterControl() {
-  const available = Number(state.todayMeta?.racer_count || 0) > 0;
+  const available = Number(state.todayMeta?.racer_count || 0) > 0
+    && state.todayMeta?.date === todayJstIso();
+
+  const unavailableLabel = state.todayMetaStatus === "stale"
+    ? "本日分を更新待ち"
+    : state.todayMetaStatus === "error"
+      ? "出走情報取得失敗"
+      : "出走情報未取得";
+
   return `
     <label class="today-filter ${available ? "" : "disabled"}">
       <input type="checkbox" data-today-toggle ${state.todayOnly && available ? "checked" : ""} ${available ? "" : "disabled"}>
@@ -127,7 +147,7 @@ function todayFilterControl() {
       <span>本日出走のみ</span>
       ${available
         ? `<small>${Number(state.todayMeta.racer_count).toLocaleString()}人</small>`
-        : `<small>出走情報未取得</small>`}
+        : `<small>${unavailableLabel}</small>`}
     </label>`;
 }
 
@@ -1701,13 +1721,31 @@ async function boot(skipSessionCheck = false) {
       ? new Date(baselines.generated_at).toLocaleString("ja-JP")
       : null;
 
-    state.todayMeta = todayMeta && Array.isArray(todayMeta.racers) ? todayMeta : null;
+    const todayIso = todayJstIso();
+    const todayMetaValid = todayMeta
+      && Array.isArray(todayMeta.racers)
+      && String(todayMeta.date || "") === todayIso
+      && Number(todayMeta.racer_count || 0) > 0;
+
+    state.todayMetaStatus = todayMetaValid
+      ? "ok"
+      : todayMeta && String(todayMeta.date || "") !== todayIso
+        ? "stale"
+        : "error";
+
+    state.todayMeta = todayMetaValid ? todayMeta : null;
     state.todayByRegno = new Map(
       (state.todayMeta?.racers || []).map((r) => [Number(r.regno), r])
     );
-    if (!state.todayMeta?.racer_count) {
+
+    if (!todayMetaValid) {
       state.todayOnly = false;
       localStorage.removeItem("wake_today_only");
+      if (todayMeta?.date) {
+        console.warn(
+          `today_entries stale/unavailable: file_date=${todayMeta.date} jst_today=${todayIso}`
+        );
+      }
     }
   } catch (e) {
     shell(`
