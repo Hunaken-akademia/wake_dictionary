@@ -1,6 +1,19 @@
 name: Build and Deploy WAKE Dictionary
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/build-wake-dictionary.yml"
+      - "api/**"
+      - "lib/**"
+      - "scripts/**"
+      - "src/**"
+      - "data/**"
+      - "package.json"
+      - "package-lock.json"
+      - "vercel.json"
   workflow_dispatch:
     inputs:
       force_full_refresh:
