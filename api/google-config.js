@@ -9,7 +9,10 @@ export default function handler(req, res) {
   const publicUrl = String(
     process.env.WAKE_DICTIONARY_PUBLIC_URL || "https://wake-dictionary.vercel.app"
   ).trim().replace(/\/+$/, "");
-  const redirectTo = `${publicUrl}/?dictionary_oauth=1`;
+  const isAdmin = req.query?.destination === "admin";
+  const redirectTo = isAdmin
+    ? `${publicUrl}/admin?dictionary_oauth=1`
+    : `${publicUrl}/?dictionary_oauth=1`;
   const params = new URLSearchParams({ provider: "google", redirect_to: redirectTo, apikey: publishableKey });
   const authorizeUrl = `${supabaseUrl}/auth/v1/authorize?${params}`;
   return res.status(200).json({ authorizeUrl, supabaseUrl, publishableKey });

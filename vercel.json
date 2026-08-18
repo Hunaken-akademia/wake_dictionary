@@ -5,6 +5,9 @@
   "framework": "vite",
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
+  "rewrites": [
+    { "source": "/admin", "destination": "/index.html" }
+  ],
   "functions": {
     "api/data.js": {
       "includeFiles": "private-data/**",
