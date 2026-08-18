@@ -1,7 +1,7 @@
 export default function handler(req, res) {
   res.setHeader("Cache-Control", "private, no-store, max-age=0");
   if (req.method !== "GET") return res.status(405).json({ error: "method_not_allowed" });
-  const supabaseUrl = String(process.env.SUPABASE_URL || "").trim().replace(/\/$/, "");
+  const supabaseUrl = String(process.env.SUPABASE_URL || "").trim().replace(/\/+$/, "").replace(/\/rest\/v1$/i, "");
   const publishableKey = String(process.env.SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_ANON_KEY || "").trim();
   if (!supabaseUrl || !publishableKey) return res.status(503).json({ error: "google_access_not_configured" });
   const proto = String(req.headers["x-forwarded-proto"] || "https").split(",")[0].trim();
