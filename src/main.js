@@ -83,7 +83,7 @@ const GUIDE_ITEMS = [
   ["まくり職人", "指定級別の中で、まくりで1着になる率が高い選手を比較します。"],
   ["差し名人", "指定級別の中で、差しで1着になる率が高い選手を比較します。"],
   ["イン最強", "1コースから逃げで1着になる率が高い選手を比較します。"],
-  ["イン不安定", "1コース逃げ率が低めの選手を比較します。相手側を狙う時の参考用です。"],
+  ["イン不", "1コース逃げ率が低めの選手を比較します。相手側を狙う時の参考用です。"],
   ["ダッシュ巧者", "4〜6コースからの3連対率が高い選手を比較します。"],
   ["スタート巧者", "平均STが速い選手を比較します。STは小さいほど速い数値です。"],
   ["Fなし", "集計期間内のF回数が0の選手だけに絞ったランキングです。"],
@@ -745,7 +745,7 @@ function featureCards() {
       <article class="card">
         <div class="icon">↗</div>
         <h3>B級の伏兵などのランキング</h3>
-        <p>B級の伏兵、まくり職人、イン不安定、ダッシュ巧者などを事前集計。名前の意味は用語ガイドで確認できます。</p>
+        <p>B級の伏兵、まくり職人、イン不、ダッシュ巧者などを事前集計。名前の意味は用語ガイドで確認できます。</p>
         <button data-go="ranking">ランキングを見る →</button>
       </article>
       <article class="card">
@@ -1077,7 +1077,7 @@ const rankingDefs = [
   ["ranking_b_attackers.json","B級の伏兵"],
   ["ranking_makuri_B1.json","B1 まくり職人"],
   ["ranking_sashi_B1.json","B1 差し名人"],
-  ["ranking_in_unstable_A1.json","A1 イン不安定"],
+  ["ranking_in_unstable_A1.json","A1 イン不"],
   ["ranking_dash_B1.json","B1 ダッシュ巧者"],
   ["ranking_start_no_f_A1.json","A1 スタート巧者（Fなし）"],
   ["ranking_start_no_f_B1.json","B1 スタート巧者（Fなし）"],
@@ -1411,7 +1411,7 @@ function buildVenueRankingData(data, file) {
       kimarite:"逃げ", countFn:(a)=>a.kimarite["逃げ"],
       metric:"nige_win_rate_per_start",
       sort:"adjRate_asc",
-      title:"A1 イン不安定",
+      title:"A1 イン不",
     });
   }
 
@@ -1643,7 +1643,7 @@ const RANKING_TYPES_V25 = [
   ["makurizashi", "まくり差し巧者"],
   ["sashi", "差し名人"],
   ["in_strong", "イン最強"],
-  ["in_unstable", "イン不安定"],
+  ["in_unstable", "イン不"],
   ["dash", "ダッシュ巧者（3連対率）"],
   ["start", "スタート巧者"],
   ["start_no_f", "スタート巧者（Fなし）"],
