@@ -27,7 +27,7 @@ on:
 
 concurrency:
   group: wake-dictionary-production
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   build-and-deploy:
