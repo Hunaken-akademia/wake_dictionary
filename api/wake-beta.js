@@ -19,17 +19,17 @@ function pct(value) {
   return Number.isFinite(value) ? Math.round(value * 100) / 100 : null;
 }
 
-function featureTitles(value) {
+function featureTitles(value, placeNo) {
   const out = [];
-  const visit = (node) => {
-    if (!node || out.length >= 2) return;
-    if (Array.isArray(node)) return node.forEach(visit);
-    if (typeof node !== "object") return;
-    const label = node.title || node.label || node.name;
-    if (typeof label === "string" && label.length <= 18 && !out.includes(label)) out.push(label === "イン不安定" ? "イン不" : label);
-    Object.values(node).forEach(visit);
-  };
-  visit(value);
+  for (const item of value?.insights?.items || []) {
+    let label = null;
+    if (item.type === "kimarite_bias") label = item.kimarite === "差し" ? "差し名人" : item.kimarite === "まくり" ? "まくり職人" : item.kimarite === "まくり差し" ? "まくり差し巧者" : null;
+    if (item.type === "venue_ren3" && item.direction === "strong" && Number(item.place_no) === Number(placeNo)) label = "当地巧者";
+    if (item.type === "course_win" && item.direction === "strong") label = `${item.course}コース巧者`;
+    if (item.type === "st_fast") label = "スタート巧者";
+    if (label && !out.includes(label)) out.push(label);
+    if (out.length >= 2) break;
+  }
   return out.slice(0, 2);
 }
 
@@ -65,20 +65,22 @@ export default async function handler(req, res) {
       const regno = regnos[index];
       let titles = [];
       let nationalByCourse = {};
+      let nationalCourses = [];
       let name = venueByRegno.get(regno)?.name || "";
-      try { titles = featureTitles(await json(`features/${regno}.json`)); } catch { /* optional */ }
+      try { titles = featureTitles(await json(`features/${regno}.json`), placeNo); } catch { /* optional */ }
       try {
         const detail = await json(`racers/${regno}.json`);
         name = detail?.racer?.name || name;
         nationalByCourse = Object.fromEntries((detail.course_stats || []).map((c) => [String(c.course), c.rates?.national_same_course?.ren3 ?? null]));
+        nationalCourses = (detail.course_stats || []).map((c) => ({ course:Number(c.course), n:Number(c.n || 0), win_n:Number(c.finish_counts?.win || 0), ren3_n:Number(c.finish_counts?.ren3 || 0) }));
       } catch { /* optional */ }
-      entrants.push({ boat: index + 1, regno, name, titles, nationalByCourse, venue: venueByRegno.get(regno) || null });
+      entrants.push({ boat: index + 1, regno, name, titles, nationalByCourse, nationalCourses, venue: venueByRegno.get(regno) || null });
     }
     entrants.sort((a, b) => a.boat - b.boat);
     return res.status(200).json({
       race: { venue, placeNo },
       baselines: venueData.baselines?.ALL || {},
-      entrants: entrants.map((r) => ({ boat:r.boat, regno:r.regno, name:r.name, titles:r.titles, nationalByCourse:r.nationalByCourse, courses:(r.venue?.courses || []).map((c) => ({ course:Number(c.course), n:Number(c.n || 0), ren3_n:Number(c.ren3_n || 0) })) })),
+      entrants: entrants.map((r) => ({ boat:r.boat, regno:r.regno, name:r.name, titles:r.titles, nationalByCourse:r.nationalByCourse, nationalCourses:r.nationalCourses, courses:(r.venue?.courses || []).map((c) => ({ course:Number(c.course), n:Number(c.n || 0), win_n:Number(c.win_n || 0), ren3_n:Number(c.ren3_n || 0) })) })),
       shrinkageK: Number(venueData.shrinkage_k || 15),
     });
   } catch (error) {
