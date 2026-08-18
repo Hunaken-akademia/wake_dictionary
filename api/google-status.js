@@ -6,7 +6,7 @@ export default async function handler(req, res) {
   const user = await authenticatedGoogleUser(req);
   if (!user) return res.status(401).json({ error: "unauthorized" });
   try {
-    const query = new URLSearchParams({ select: "id,status,created_at,updated_at", user_id: `eq.${user.id}`, limit: "1" });
+    const query = new URLSearchParams({ select: "id,status,buyer_name,purchased_at,created_at,updated_at,admin_note", user_id: `eq.${user.id}`, limit: "1" });
     const [requests, entitlement] = await Promise.all([rest(`dictionary_access_requests?${query}`), activeEntitlement(user)]);
     return res.status(200).json({
       user: { email: user.email },
