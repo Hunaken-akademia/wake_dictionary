@@ -181,6 +181,7 @@ jobs:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          SUPABASE_PUBLISHABLE_KEY: "sb_publishable_HxRrAynlKng_XgMbmgEdAA_T_cb2aRE"
           WAKE_DICTIONARY_ADMIN_EMAILS: "aru020940@gmail.com"
         shell: bash
         run: |
@@ -189,6 +190,8 @@ jobs:
             --force --sensitive --scope hunaken-akademia --token="$VERCEL_TOKEN"
           printf '%s' "$SUPABASE_SERVICE_KEY" | npx --yes vercel@59.1.3 env add SUPABASE_SERVICE_KEY production \
             --force --sensitive --scope hunaken-akademia --token="$VERCEL_TOKEN"
+          printf '%s' "$SUPABASE_PUBLISHABLE_KEY" | npx --yes vercel@59.1.3 env add SUPABASE_PUBLISHABLE_KEY production \
+            --force --scope hunaken-akademia --token="$VERCEL_TOKEN"
           printf '%s' "$WAKE_DICTIONARY_ADMIN_EMAILS" | npx --yes vercel@59.1.3 env add WAKE_DICTIONARY_ADMIN_EMAILS production \
             --force --scope hunaken-akademia --token="$VERCEL_TOKEN"
           echo "Google access environment variables synchronized."
