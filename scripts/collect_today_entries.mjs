@@ -7,19 +7,21 @@ const OUT_DIR = resolve(process.env.WAKE_DICTIONARY_OUT_DIR || "public/data");
 const OUT_FILE = resolve(OUT_DIR, "today_entries.json");
 const WOMEN_FILE = resolve(process.env.WAKE_WOMEN_RACERS_FILE || "data/women_racers.json");
 const CONCURRENCY = Math.max(1, Math.min(12, Number(process.env.TODAY_ENTRIES_CONCURRENCY || 10)));
-const WAIT_MINUTES = Math.max(0, Number(process.env.TODAY_ENTRIES_WAIT_MINUTES || 75));
-const RETRY_MINUTES = Math.max(1, Number(process.env.TODAY_ENTRIES_RETRY_MINUTES || 10));
 const REQUIRED = String(process.env.TODAY_ENTRIES_REQUIRED || "0") === "1";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const pad2 = (v) => String(Number(v)).padStart(2, "0");
 const ymd = (s) => String(s).replaceAll("-", "");
 
-function jstDate() {
+function jstClock() {
   const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Tokyo", year: "numeric", month: "2-digit", day: "2-digit",
+    timeZone: "Asia/Tokyo", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", hourCycle: "h23",
   }).formatToParts(new Date());
   const o = Object.fromEntries(parts.map((p) => [p.type, p.value]));
-  return `${o.year}-${o.month}-${o.day}`;
+  return {date:`${o.year}-${o.month}-${o.day}`,hour:Number(o.hour)};
+}
+function previousDate(date) {
+  const [y,m,d]=String(date).split("-").map(Number);
+  return new Date(Date.UTC(y,m-1,d)-86400000).toISOString().slice(0,10);
 }
 function str3Url(date, placeNo, raceNo) {
   const jcd = pad2(placeNo);
@@ -166,27 +168,26 @@ function enrichRaceClass(racers,women) {
 }
 
 async function main() {
-  const date = jstDate();
-  const deadline = Date.now() + WAIT_MINUTES * 60000;
-  console.log(`today_entries_date=${date}`);
+  const clock = jstClock();
+  const requestedDate = clock.date;
+  let date = clock.hour < 8 ? previousDate(clock.date) : clock.date;
+  console.log(`today_entries_calendar_date=${requestedDate}`);
+  console.log(`today_entries_cutoff_hour=8 current_hour=${clock.hour}`);
+  console.log(`today_entries_primary_date=${date}`);
   console.log(`concurrency=${CONCURRENCY}`);
-  console.log(`wait_minutes=${WAIT_MINUTES}`);
-  let result;
-  let round = 0;
-  do {
-    round++;
-    result = await collectAttempt(date,false);
-    console.log(`probe_round=${round} racers=${result.racers.length} success=${result.successRaces} errors=${JSON.stringify(result.errors)}`);
-    if (result.racers.length || Date.now() >= deadline) break;
-    const waitMs = Math.min(RETRY_MINUTES*60000,Math.max(0,deadline-Date.now()));
-    if (waitMs > 0) {
-      console.warn(`today entries not published; retrying in ${Math.ceil(waitMs/60000)} minutes`);
-      await sleep(waitMs);
-    }
-  } while (Date.now() < deadline);
+  let result = await collectAttempt(date,false);
+  console.log(`primary_probe racers=${result.racers.length} success=${result.successRaces} errors=${JSON.stringify(result.errors)}`);
   if (!result?.racers?.length) {
-    console.warn("probe remained empty; running final 24-place x 3-race fallback scan");
+    console.warn("primary probe empty; running final 24-place x 3-race scan");
     result = await collectAttempt(date,true);
+  }
+  let usedPreviousDay = date !== requestedDate;
+  if (!result?.racers?.length && date === requestedDate) {
+    date = previousDate(requestedDate);
+    usedPreviousDay = true;
+    console.warn(`current schedule unavailable; keeping previous date=${date}`);
+    result = await collectAttempt(date,false);
+    if (!result?.racers?.length) result = await collectAttempt(date,true);
   }
   const women = await womenSet();
   const racers = (result.racers||[]).sort((a,b)=>a.regno-b.regno);
@@ -195,8 +196,9 @@ async function main() {
   const classCounts = {WOMEN:0,MIXED:0,UNKNOWN:0};
   for (const value of raceClass.values()) classCounts[value]=(classCounts[value]||0)+1;
   const payload = {
-    schema_version:2,date,generated_at:new Date().toISOString(),source:"BOATCAST_STR3",
-    status:racers.length?"ok":"unavailable",racer_count:racers.length,
+    schema_version:3,date,requested_date:requestedDate,cutoff_hour_jst:8,
+    used_previous_day:usedPreviousDay,generated_at:new Date().toISOString(),source:"BOATCAST_STR3",
+    status:racers.length?(usedPreviousDay?"previous_day":"ok"):"unavailable",racer_count:racers.length,
     successful_races:result.successRaces,skipped_races:result.skippedRaces,places,
     race_class_counts:classCounts,fetch_errors:result.errors,racers,
   };
@@ -210,7 +212,7 @@ async function main() {
   console.log(`kana_candidate_sample_count=${result.readingDiag.samples.length}`);
   console.log(`kana_candidate_samples=${JSON.stringify(result.readingDiag.samples)}`);
   if (!racers.length) {
-    const message = `today entries unavailable for JST ${date} after ${WAIT_MINUTES} minute wait`;
+    const message = `schedule entries unavailable for JST ${date}`;
     if (REQUIRED) throw new Error(message);
     console.warn(`WARNING: ${message}; core dictionary deployment will continue`);
   }

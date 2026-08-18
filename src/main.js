@@ -107,10 +107,13 @@ function todayJstIso() {
     timeZone: "Asia/Tokyo",
     year: "numeric",
     month: "2-digit",
-    day: "2-digit",
+    day: "2-digit", hour: "2-digit", hourCycle: "h23",
   }).formatToParts(new Date());
   const o = Object.fromEntries(parts.map((p) => [p.type, p.value]));
-  return `${o.year}-${o.month}-${o.day}`;
+  const date = `${o.year}-${o.month}-${o.day}`;
+  if (Number(o.hour) >= 8) return date;
+  const [y,m,d] = date.split("-").map(Number);
+  return new Date(Date.UTC(y,m-1,d)-86400000).toISOString().slice(0,10);
 }
 
 function normalizeSearchText(value) {
@@ -213,7 +216,7 @@ function todayFilterControl() {
     <label class="today-filter ${available ? "" : "disabled"}">
       <input type="checkbox" data-today-toggle ${state.todayOnly && available ? "checked" : ""} ${available ? "" : "disabled"}>
       <span class="today-check"></span>
-      <span>本日出走のみ</span>
+      <span>${state.todayMeta?.used_previous_day ? "前日出走のみ" : "本日出走のみ"}</span>
       ${available
         ? `<small>${Number(state.todayMeta.racer_count).toLocaleString()}人</small>`
         : `<small>${unavailableLabel}</small>`}
