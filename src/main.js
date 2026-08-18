@@ -427,13 +427,71 @@ async function startGoogleLogin() {
   }
 }
 
-async function googleApi(path, method = "GET") {
+async function googleApi(path, method = "GET", body = null) {
   const token = googleAccessToken();
   if (!token) throw new Error("google_session_missing");
-  const response = await fetch(path, { method, cache: "no-store", headers: { Authorization: `Bearer ${token}` } });
+  const response = await fetch(path, {
+    method, cache: "no-store",
+    headers: { Authorization: `Bearer ${token}`, ...(body ? { "Content-Type": "application/json" } : {}) },
+    ...(body ? { body: JSON.stringify(body) } : {})
+  });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
   return data;
+}
+
+async function submitGoogleApplication() {
+  const buyerName = $("#buyerName")?.value.trim();
+  const purchasedAt = $("#purchasedAt")?.value;
+  const file = $("#proofFile")?.files?.[0];
+  if (!buyerName || !purchasedAt || !file) return renderGoogleAccess("購入者名・購入日時・購入証明をすべて入力してください。");
+  if (file.size > 5 * 1024 * 1024) return renderGoogleAccess("購入証明は5MB以内にしてください。");
+  try {
+    const config = await fetch("/api/google-config", { cache: "no-store" }).then((r) => r.json());
+    const ext = ({ "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "application/pdf": "pdf" })[file.type];
+    if (!ext) throw new Error("file_type");
+    const user = await googleApi("/api/google-status");
+    const userId = googleSession()?.userId || "";
+    const token = googleAccessToken();
+    const profile = await fetch(`${config.supabaseUrl}/auth/v1/user`, { headers: { apikey: config.publishableKey, Authorization: `Bearer ${token}` } }).then((r) => r.json());
+    if (!profile.id) throw new Error("user");
+    const path = `${profile.id}/${Date.now()}-${crypto.randomUUID() }.${ext}`;
+    const upload = await fetch(`${config.supabaseUrl}/storage/v1/object/dictionary-purchase-proofs/${path}`, {
+      method: "POST", headers: { apikey: config.publishableKey, Authorization: `Bearer ${token}`, "Content-Type": file.type, "x-upsert": "false" }, body: file
+    });
+    if (!upload.ok) throw new Error("upload");
+    await fetch("/api/google-request", { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ buyerName, purchasedAt: new Date(purchasedAt).toISOString(), proofObjectPath: path }) }).then(async (r) => { if (!r.ok) throw new Error((await r.json()).error); });
+    await renderGoogleAccess("申請を受け付けました。購入証明の確認後に承認されます。");
+  } catch {
+    await renderGoogleAccess("申請を送信できませんでした。入力内容と画像を確認してください。");
+  }
+}
+
+async function renderGoogleAdmin(message = "") {
+  try {
+    const data = await googleApi("/api/google-admin");
+    const rows = data.applications || [];
+    app.innerHTML = `<main class="login-page"><section class="login-card admin-card">
+      <div class="kicker">WAKE辞典 管理者</div><h1>購入申請の承認</h1>
+      ${message ? `<div class="login-message">${esc(message)}</div>` : ""}
+      <div class="admin-list">${rows.map((r) => `<article class="admin-item">
+        <strong>${esc(r.buyer_name || "名称未入力")}</strong><p>${esc(r.google_email)}<br>購入：${r.purchased_at ? new Date(r.purchased_at).toLocaleString("ja-JP") : "-"}<br>状態：${esc(r.status)}</p>
+        <div class="admin-actions"><button data-proof="${r.id}">証明を見る</button>${r.status !== "approved" ? `<button data-approve="${r.id}">承認</button><button data-reject="${r.id}">却下</button>` : ""}</div>
+      </article>`).join("") || "<p>申請はありません。</p>"}</div>
+      <button id="adminBack" class="google-login">申請画面へ戻る</button>
+    </section></main>`;
+    document.querySelectorAll("[data-proof]").forEach((b) => b.onclick = async () => { const d = await googleApi("/api/google-admin", "POST", { id: b.dataset.proof, action: "proof" }); window.open(d.url, "_blank", "noopener"); });
+    document.querySelectorAll("[data-approve]").forEach((b) => b.onclick = async () => { await adminAction(b.dataset.approve, "approve"); });
+    document.querySelectorAll("[data-reject]").forEach((b) => b.onclick = async () => { const note = prompt("却下理由", "購入証明を確認できませんでした。"); if (note !== null) await adminAction(b.dataset.reject, "reject", note); });
+    $("#adminBack").onclick = () => renderGoogleAccess();
+  } catch { renderLogin("管理者画面を開けませんでした。"); }
+}
+
+async function adminAction(id, action, note = "") {
+  const token = googleAccessToken();
+  const r = await fetch("/api/google-admin", { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ id, action, note }) });
+  if (!r.ok) return renderGoogleAdmin("処理できませんでした。");
+  return renderGoogleAdmin(action === "approve" ? "承認しました。" : "却下しました。");
 }
 
 async function renderGoogleAccess(message = "") {
@@ -456,14 +514,22 @@ async function renderGoogleAccess(message = "") {
         <p>${esc(status.user.email)}</p>
         ${message ? `<div class="login-message">${esc(message)}</div>` : ""}
         ${approved ? `<div class="access-success">利用期限：${esc(expires)}まで</div><button id="openDictionary" class="primary access-action">辞典を開く</button>` : ""}
-        ${!approved && !pending ? `<button id="requestAccess" class="primary access-action">このアカウントで申請する</button>` : ""}
-        ${pending && status.isAdmin ? `<div class="beta-note">管理者本人のβテストです。申請内容を確認して承認してください。</div><button id="approveAccess" class="primary access-action">自分の申請を承認する</button>` : ""}
+        ${!approved && !pending ? `
+          <div class="application-fields">
+            <label>noteの購入者名<input id="buyerName" maxlength="80" placeholder="noteに表示される購入者名"></label>
+            <label>購入日時<input id="purchasedAt" type="datetime-local"></label>
+            <label>購入証明画像・PDF<input id="proofFile" type="file" accept="image/jpeg,image/png,image/webp,application/pdf"></label>
+            <p class="beta-note">noteの購入完了画面または購入履歴が分かる画面を添付してください（5MB以内）。</p>
+          </div>
+          <button id="requestAccess" class="primary access-action">購入証明を添付して申請する</button>` : ""}
         ${pending && !status.isAdmin ? `<div class="login-message">承認待ちです。</div>` : ""}
+        ${pending && status.isAdmin ? `<div class="login-message">申請済みです。管理画面から確認してください。</div>` : ""}
+        ${status.isAdmin ? `<button id="openAdmin" class="primary access-action" type="button">承認管理画面を開く</button>` : ""}
         <button id="googleLogout" class="google-login access-action" type="button">Google認証を終了</button>
         <button id="backToPassword" class="text-link access-action" type="button">パスワード入力へ戻る</button>
       </section></main>`;
-    $("#requestAccess")?.addEventListener("click", async () => { await googleApi("/api/google-request", "POST"); await renderGoogleAccess("申請を受け付けました。"); });
-    $("#approveAccess")?.addEventListener("click", async () => { await googleApi("/api/google-approve", "POST"); await renderGoogleAccess("承認しました。"); });
+    $("#requestAccess")?.addEventListener("click", submitGoogleApplication);
+    $("#openAdmin")?.addEventListener("click", () => renderGoogleAdmin());
     $("#openDictionary")?.addEventListener("click", () => { location.hash = "#/"; boot(true); });
     $("#googleLogout")?.addEventListener("click", () => { localStorage.removeItem(GOOGLE_SESSION_KEY); renderLogin("Google認証を終了しました。"); });
     $("#backToPassword")?.addEventListener("click", () => renderLogin());
