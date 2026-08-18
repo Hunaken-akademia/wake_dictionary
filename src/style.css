@@ -1010,3 +1010,12 @@ tr:hover td { background:rgba(255,255,255,.025); }
   }
   .ranking-filters-v25 { grid-template-columns: 1fr !important; }
 }
+.application-fields { display:grid; gap:14px; margin:18px 0; text-align:left; }
+.application-fields label { display:grid; gap:7px; color:#b9c9d8; font-size:13px; font-weight:700; }
+.application-fields input { width:100%; box-sizing:border-box; padding:13px; border:1px solid #31506a; border-radius:12px; background:#071522; color:#fff; }
+.admin-card { width:min(760px, calc(100vw - 32px)); }
+.admin-list { display:grid; gap:12px; margin:20px 0; text-align:left; }
+.admin-item { padding:16px; border:1px solid #28455d; border-radius:14px; background:#081725; }
+.admin-item p { margin:8px 0; font-size:13px; line-height:1.7; }
+.admin-actions { display:flex; flex-wrap:wrap; gap:8px; }
+.admin-actions button { padding:9px 12px; border:1px solid #45d6d0; border-radius:9px; background:#10283a; color:#fff; font-weight:700; }
