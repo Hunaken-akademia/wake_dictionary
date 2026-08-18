@@ -72,7 +72,10 @@ function parseStr3(raw, placeNo, raceNo, readingDiag) {
     if (c.length < 6) continue;
     const regno = Number(c[0]);
     if (!Number.isFinite(regno) || regno <= 0) continue;
-    rows.push({regno,racer_name:c[1]||null,place_no:Number(placeNo),race_no:Number(raceNo)});
+    // STR3の選手行は1〜6号艇順。WAKE連携では号艇から選手を特定し、
+    // 成績の参照コース自体はWAKE側の展示進入を使う。
+    const boatNo = rows.length + 1;
+    rows.push({regno,racer_name:c[1]||null,boat_no:boatNo,place_no:Number(placeNo),race_no:Number(raceNo)});
     if (readingDiag.samples.length < 8) {
       const cand = kanaCandidate(c);
       if (cand.length) {
@@ -95,7 +98,7 @@ async function collectAttempt(date, fullScan = false) {
       if (!racerMap.has(r.regno)) racerMap.set(r.regno,{regno:r.regno,name:r.racer_name,entries:[]});
       const target = racerMap.get(r.regno);
       const key = `${r.place_no}|${r.race_no}`;
-      if (!target.entries.some((e)=>`${e.place_no}|${e.race_no}`===key)) target.entries.push({place_no:r.place_no,race_no:r.race_no});
+      if (!target.entries.some((e)=>`${e.place_no}|${e.race_no}`===key)) target.entries.push({place_no:r.place_no,race_no:r.race_no,boat_no:r.boat_no});
     }
   }
   async function runJobs(jobs, fetchAttempts = 2) {
