@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isAuthorized } from "../lib/auth.js";
+import { isGoogleDictionaryAuthorized } from "../lib/google-access.js";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "private-data");
 function safePath(value) {
@@ -18,7 +19,8 @@ function safePath(value) {
 export default async function handler(req, res) {
   res.setHeader("Cache-Control", "private, no-store, max-age=0");
   res.setHeader("X-Content-Type-Options", "nosniff");
-  if (!isAuthorized(req)) return res.status(401).json({ error: "unauthorized" });
+  const allowed = isAuthorized(req) || await isGoogleDictionaryAuthorized(req);
+  if (!allowed) return res.status(401).json({ error: "unauthorized" });
   const file = safePath(req.query?.path);
   if (!file) return res.status(400).json({ error: "invalid_path" });
   try {

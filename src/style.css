@@ -489,6 +489,12 @@ tr:hover td { background:rgba(255,255,255,.025); }
   font-size: 12px;
 }
 .login-foot { margin-top: 16px; color: var(--muted); font-size: 10px; line-height: 1.6; }
+.login-divider { display:flex; align-items:center; gap:10px; margin:20px 0 12px; color:var(--muted); font-size:10px; }
+.login-divider::before, .login-divider::after { content:""; flex:1; height:1px; background:var(--line); }
+.google-login { width:100%; min-height:44px; border:1px solid var(--line); border-radius:10px; background:#fff; color:#172033; font-weight:800; padding:10px 14px; }
+.beta-note { margin:10px 0 0 !important; color:var(--muted); font-size:11px !important; line-height:1.6 !important; }
+.access-action { width:100%; margin-top:14px; min-height:44px; }
+.access-success { margin-top:14px; padding:12px; border:1px solid rgba(93,211,158,.3); border-radius:10px; background:rgba(93,211,158,.08); color:#b9f5dc; font-size:13px; }
 .guide-logout { padding-top: 16px; text-align: right; }
 
 
