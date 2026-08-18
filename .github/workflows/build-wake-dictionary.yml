@@ -9,8 +9,8 @@ on:
         default: false
         type: boolean
   schedule:
-    # JST 04:30 = UTC 19:30 (previous day)
-    - cron: "30 19 * * *"
+    # JST 08:00 = UTC 23:00 (previous day)
+    - cron: "0 23 * * *"
 
 concurrency:
   group: wake-dictionary-production
@@ -96,8 +96,8 @@ jobs:
           VERIFY_B1_REGNO: ${{ vars.VERIFY_B1_REGNO }}
           WAKE_DICTIONARY_OUT_DIR: public/data
           TODAY_ENTRIES_CONCURRENCY: "10"
-          TODAY_ENTRIES_WAIT_MINUTES: "75"
-          TODAY_ENTRIES_RETRY_MINUTES: "10"
+          TODAY_ENTRIES_WAIT_MINUTES: "30"
+          TODAY_ENTRIES_RETRY_MINUTES: "5"
           TODAY_ENTRIES_REQUIRED: "0"
           WAKE_WOMEN_RACERS_FILE: data/women_racers.json
         shell: bash
