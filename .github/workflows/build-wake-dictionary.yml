@@ -176,6 +176,23 @@ jobs:
             --scope hunaken-akademia \
             --token="$VERCEL_TOKEN"
 
+      - name: Sync Google access environment to Vercel production
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          WAKE_DICTIONARY_ADMIN_EMAILS: "aru020940@gmail.com"
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s' "$SUPABASE_URL" | npx --yes vercel@59.1.3 env add SUPABASE_URL production \
+            --force --sensitive --scope hunaken-akademia --token="$VERCEL_TOKEN"
+          printf '%s' "$SUPABASE_SERVICE_KEY" | npx --yes vercel@59.1.3 env add SUPABASE_SERVICE_KEY production \
+            --force --sensitive --scope hunaken-akademia --token="$VERCEL_TOKEN"
+          printf '%s' "$WAKE_DICTIONARY_ADMIN_EMAILS" | npx --yes vercel@59.1.3 env add WAKE_DICTIONARY_ADMIN_EMAILS production \
+            --force --scope hunaken-akademia --token="$VERCEL_TOKEN"
+          echo "Google access environment variables synchronized."
+
       - name: Pull Vercel production settings
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
