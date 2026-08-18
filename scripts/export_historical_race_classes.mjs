@@ -13,12 +13,25 @@ const KINDS=["逃げ","差し","まくり","まくり差し","抜き","恵まれ
 const GRADES=["A1","A2","B1","B2"];
 
 async function getJson(path){return JSON.parse(await readFile(resolve(OUT,path),"utf8"));}
+const sleep=(ms)=>new Promise(resolve=>setTimeout(resolve,ms));
+async function fetchWithRetry(url){
+  for(let attempt=1;attempt<=5;attempt++){
+    const res=await fetch(url,{headers});
+    if(res.ok||(![429,502,503,504].includes(res.status))) return res;
+    if(attempt===5) return res;
+    const retryAfter=Number(res.headers.get("retry-after"));
+    const waitMs=Number.isFinite(retryAfter)&&retryAfter>0 ? retryAfter*1000 : 1000*(2**(attempt-1));
+    console.warn(`Supabase ${res.status}; retry ${attempt}/5 in ${waitMs}ms`);
+    await res.arrayBuffer();
+    await sleep(waitMs);
+  }
+}
 async function fetchAll(resource,{select="*",filters=[]}={}){
   const out=[];
   for(let offset=0;;offset+=1000){
     const q=new URLSearchParams({select,limit:"1000",offset:String(offset)});
     for(const [k,v] of filters) q.append(k,v);
-    const res=await fetch(`${URL_ROOT}/rest/v1/${resource}?${q}`,{headers});
+    const res=await fetchWithRetry(`${URL_ROOT}/rest/v1/${resource}?${q}`);
     const body=await res.text();
     if(!res.ok) throw new Error(`${resource} ${res.status}: ${body.slice(0,800)}`);
     const rows=body?JSON.parse(body):[]; out.push(...rows);
