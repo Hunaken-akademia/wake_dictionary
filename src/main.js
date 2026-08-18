@@ -21,7 +21,7 @@ function captureGoogleCallback() {
     const expiresIn = Number(params.get("expires_in") || 3600);
     localStorage.setItem(GOOGLE_SESSION_KEY, JSON.stringify({ accessToken, expiresAt: Date.now() + expiresIn * 1000 }));
   }
-  history.replaceState(null, "", `${location.pathname}#/google-access`);
+  history.replaceState(null, "", location.pathname === "/admin" ? "/admin" : "/#/google-access");
   return Boolean(accessToken);
 }
 
@@ -83,7 +83,7 @@ const GUIDE_ITEMS = [
   ["まくり職人", "指定級別の中で、まくりで1着になる率が高い選手を比較します。"],
   ["差し名人", "指定級別の中で、差しで1着になる率が高い選手を比較します。"],
   ["イン最強", "1コースから逃げで1着になる率が高い選手を比較します。"],
-  ["イン不安定", "1コース逃げ率が低めの選手を比較します。相手側を狙う時の参考用です。"],
+  ["イン不", "1コース逃げ率が低めの選手を比較します。相手側を狙う時の参考用です。"],
   ["ダッシュ巧者", "4〜6コースからの3連対率が高い選手を比較します。"],
   ["スタート巧者", "平均STが速い選手を比較します。STは小さいほど速い数値です。"],
   ["Fなし", "集計期間内のF回数が0の選手だけに絞ったランキングです。"],
@@ -427,6 +427,17 @@ async function startGoogleLogin() {
   }
 }
 
+async function startAdminGoogleLogin() {
+  try {
+    const response = await fetch("/api/google-config?destination=admin", { cache: "no-store" });
+    const data = await response.json();
+    if (!response.ok || !data.authorizeUrl) throw new Error(data.error || "config_failed");
+    location.href = data.authorizeUrl;
+  } catch {
+    renderAdminLogin("Google認証の準備がまだ完了していません。");
+  }
+}
+
 async function googleApi(path, method = "GET", body = null) {
   const token = googleAccessToken();
   if (!token) throw new Error("google_session_missing");
@@ -467,24 +478,63 @@ async function submitGoogleApplication() {
   }
 }
 
+function renderAdminLogin(message = "") {
+  app.innerHTML = `<main class="admin-page"><section class="admin-shell admin-login-card">
+    <div class="kicker">DICTIONARY PURCHASE ADMIN</div>
+    <h1>WAKE辞典<br>購入申請 管理画面</h1>
+    <p>管理者専用ページです。申請内容と購入証明を確認し、利用権を承認します。</p>
+    ${message ? `<div class="login-message">${esc(message)}</div>` : ""}
+    <button id="adminGoogleLogin" class="primary admin-login-button" type="button">管理者Googleアカウントでログイン</button>
+    <a class="admin-home-link" href="/">WAKE辞典へ戻る</a>
+  </section></main>`;
+  $("#adminGoogleLogin")?.addEventListener("click", startAdminGoogleLogin);
+}
+
+let adminStatusFilter = "active";
+
 async function renderGoogleAdmin(message = "") {
   try {
     const data = await googleApi("/api/google-admin");
     const rows = data.applications || [];
-    app.innerHTML = `<main class="login-page"><section class="login-card admin-card">
-      <div class="kicker">WAKE辞典 管理者</div><h1>購入申請の承認</h1>
+    const visibleRows = rows.filter((row) => adminStatusFilter === "all"
+      || (adminStatusFilter === "active" && ["pending", "approved"].includes(row.status))
+      || row.status === adminStatusFilter);
+    const pendingCount = rows.filter((row) => row.status === "pending").length;
+    app.innerHTML = `<main class="admin-page"><section class="admin-shell">
+      <div class="kicker">DICTIONARY PURCHASE ADMIN</div><h1>WAKE辞典<br>購入申請 管理画面</h1>
+      <p class="admin-intro">購入証明を確認し、確認済みの申請だけを承認します。</p>
       ${message ? `<div class="login-message">${esc(message)}</div>` : ""}
-      <div class="admin-list">${rows.map((r) => `<article class="admin-item">
-        <strong>${esc(r.buyer_name || "名称未入力")}</strong><p>${esc(r.google_email)}<br>購入：${r.purchased_at ? new Date(r.purchased_at).toLocaleString("ja-JP") : "-"}<br>状態：${esc(r.status)}</p>
-        <div class="admin-actions"><button data-proof="${r.id}">証明を見る</button>${r.status !== "approved" ? `<button data-approve="${r.id}">承認</button><button data-reject="${r.id}">却下</button>` : ""}</div>
+      <div class="admin-account"><span>管理者<strong>${esc(data.adminEmail || "aru020940@gmail.com")}</strong></span><button id="adminLogout" type="button">ログアウト</button></div>
+      <div class="admin-filter-card"><label>表示する申請<select id="adminStatusFilter">
+        <option value="active" ${adminStatusFilter === "active" ? "selected" : ""}>確認待ち・確認済み</option>
+        <option value="pending" ${adminStatusFilter === "pending" ? "selected" : ""}>確認待ちのみ</option>
+        <option value="approved" ${adminStatusFilter === "approved" ? "selected" : ""}>承認済みのみ</option>
+        <option value="rejected" ${adminStatusFilter === "rejected" ? "selected" : ""}>却下済みのみ</option>
+        <option value="all" ${adminStatusFilter === "all" ? "selected" : ""}>すべて</option>
+      </select></label><button id="adminReload" type="button">再読み込み</button></div>
+      <div class="admin-summary"><div><strong>${visibleRows.length}</strong><span>表示件数</span></div><div><strong>${pendingCount}</strong><span>確認待ち</span></div></div>
+      <div class="admin-list">${visibleRows.map((r) => `<article class="admin-item">
+        <div class="admin-item-head"><strong>${esc(r.buyer_name || "名称未入力")}</strong><span class="admin-status admin-status-${esc(r.status)}">${r.status === "pending" ? "確認待ち" : r.status === "approved" ? "承認済み" : "却下済み"}</span></div>
+        <p><b>Googleアカウント</b>${esc(r.google_email)}<br><b>購入日時</b>${r.purchased_at ? new Date(r.purchased_at).toLocaleString("ja-JP") : "-"}<br><b>申請日時</b>${r.created_at ? new Date(r.created_at).toLocaleString("ja-JP") : "-"}</p>
+        ${r.admin_note ? `<div class="admin-note">却下理由：${esc(r.admin_note)}</div>` : ""}
+        <div class="admin-actions"><button data-proof="${r.id}">購入証明を見る</button>${r.status === "pending" ? `<button class="approve" data-approve="${r.id}">承認する</button><button class="reject" data-reject="${r.id}">却下</button>` : ""}</div>
       </article>`).join("") || "<p>申請はありません。</p>"}</div>
-      <button id="adminBack" class="google-login">申請画面へ戻る</button>
+      <a class="admin-home-link" href="/">WAKE辞典へ戻る</a>
     </section></main>`;
     document.querySelectorAll("[data-proof]").forEach((b) => b.onclick = async () => { const d = await googleApi("/api/google-admin", "POST", { id: b.dataset.proof, action: "proof" }); window.open(d.url, "_blank", "noopener"); });
     document.querySelectorAll("[data-approve]").forEach((b) => b.onclick = async () => { await adminAction(b.dataset.approve, "approve"); });
     document.querySelectorAll("[data-reject]").forEach((b) => b.onclick = async () => { const note = prompt("却下理由", "購入証明を確認できませんでした。"); if (note !== null) await adminAction(b.dataset.reject, "reject", note); });
-    $("#adminBack").onclick = () => renderGoogleAccess();
-  } catch { renderLogin("管理者画面を開けませんでした。"); }
+    $("#adminStatusFilter")?.addEventListener("change", (event) => { adminStatusFilter = event.target.value; renderGoogleAdmin(); });
+    $("#adminReload")?.addEventListener("click", () => renderGoogleAdmin());
+    $("#adminLogout")?.addEventListener("click", () => { localStorage.removeItem(GOOGLE_SESSION_KEY); renderAdminLogin("ログアウトしました。"); });
+  } catch (error) {
+    if (error.message === "google_session_missing" || error.message === "unauthorized") {
+      localStorage.removeItem(GOOGLE_SESSION_KEY);
+      renderAdminLogin("管理者Googleアカウントでログインしてください。");
+      return;
+    }
+    renderAdminLogin(error.message === "admin_only" ? "このGoogleアカウントには管理者権限がありません。" : "管理者画面を開けませんでした。");
+  }
 }
 
 async function adminAction(id, action, note = "") {
@@ -695,7 +745,7 @@ function featureCards() {
       <article class="card">
         <div class="icon">↗</div>
         <h3>B級の伏兵などのランキング</h3>
-        <p>B級の伏兵、まくり職人、イン不安定、ダッシュ巧者などを事前集計。名前の意味は用語ガイドで確認できます。</p>
+        <p>B級の伏兵、まくり職人、イン不、ダッシュ巧者などを事前集計。名前の意味は用語ガイドで確認できます。</p>
         <button data-go="ranking">ランキングを見る →</button>
       </article>
       <article class="card">
@@ -1027,7 +1077,7 @@ const rankingDefs = [
   ["ranking_b_attackers.json","B級の伏兵"],
   ["ranking_makuri_B1.json","B1 まくり職人"],
   ["ranking_sashi_B1.json","B1 差し名人"],
-  ["ranking_in_unstable_A1.json","A1 イン不安定"],
+  ["ranking_in_unstable_A1.json","A1 イン不"],
   ["ranking_dash_B1.json","B1 ダッシュ巧者"],
   ["ranking_start_no_f_A1.json","A1 スタート巧者（Fなし）"],
   ["ranking_start_no_f_B1.json","B1 スタート巧者（Fなし）"],
@@ -1361,7 +1411,7 @@ function buildVenueRankingData(data, file) {
       kimarite:"逃げ", countFn:(a)=>a.kimarite["逃げ"],
       metric:"nige_win_rate_per_start",
       sort:"adjRate_asc",
-      title:"A1 イン不安定",
+      title:"A1 イン不",
     });
   }
 
@@ -1593,7 +1643,7 @@ const RANKING_TYPES_V25 = [
   ["makurizashi", "まくり差し巧者"],
   ["sashi", "差し名人"],
   ["in_strong", "イン最強"],
-  ["in_unstable", "イン不安定"],
+  ["in_unstable", "イン不"],
   ["dash", "ダッシュ巧者（3連対率）"],
   ["start", "スタート巧者"],
   ["start_no_f", "スタート巧者（Fなし）"],
@@ -2251,6 +2301,11 @@ async function renderRacer(regno) {
 
 async function boot(skipSessionCheck = false) {
   const callback = captureGoogleCallback();
+  if (location.pathname === "/admin") {
+    if (!googleAccessToken()) renderAdminLogin(callback ? "Google認証を確認できませんでした。" : "");
+    else await renderGoogleAdmin(callback ? "管理者としてログインしました。" : "");
+    return;
+  }
   if (callback || location.hash === "#/google-access") {
     await renderGoogleAccess(callback ? "Googleログインを確認しました。続けて利用申請してください。" : "");
     return;

@@ -18,7 +18,7 @@ export default async function handler(req, res) {
         select: "id,user_id,google_email,buyer_name,purchased_at,proof_object_path,status,created_at,updated_at,approved_at,approved_by,rejected_at,rejected_by,admin_note",
         product: `eq.${PRODUCT}`, order: "created_at.desc", limit: "200"
       });
-      return res.status(200).json({ applications: await rest(`dictionary_access_requests?${query}`) });
+      return res.status(200).json({ adminEmail: admin.email, applications: await rest(`dictionary_access_requests?${query}`) });
     }
     if (req.method !== "POST") return res.status(405).json({ error: "method_not_allowed" });
     const id = String(req.body?.id || "");

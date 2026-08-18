@@ -1019,3 +1019,28 @@ tr:hover td { background:rgba(255,255,255,.025); }
 .admin-item p { margin:8px 0; font-size:13px; line-height:1.7; }
 .admin-actions { display:flex; flex-wrap:wrap; gap:8px; }
 .admin-actions button { padding:9px 12px; border:1px solid #45d6d0; border-radius:9px; background:#10283a; color:#fff; font-weight:700; }
+.admin-page { min-height:100vh; padding:34px 18px 70px; box-sizing:border-box; background:radial-gradient(circle at 50% 0, #102b43 0, #071725 45%, #06131f 100%); color:#f4f8fb; }
+.admin-shell { width:min(760px, 100%); margin:0 auto; }
+.admin-shell h1 { margin:12px 0; font-size:clamp(32px, 7vw, 50px); line-height:1.12; letter-spacing:.01em; }
+.admin-intro,.admin-login-card>p { color:#aebdca; line-height:1.8; }
+.admin-login-card { padding-top:12vh; }
+.admin-login-button { width:100%; margin:24px 0 16px; padding:17px; }
+.admin-account,.admin-filter-card { display:flex; align-items:center; justify-content:space-between; gap:16px; margin-top:24px; padding:18px 20px; border:1px solid #315573; border-radius:18px; background:rgba(7,23,37,.82); }
+.admin-account span { display:grid; gap:5px; color:#91a7b9; font-size:12px; }
+.admin-account strong { color:#fff; font-size:16px; }
+.admin-account button,.admin-filter-card button { padding:11px 15px; border:1px solid #4f7898; border-radius:11px; background:#17344a; color:#fff; font-weight:800; }
+.admin-filter-card { align-items:end; }
+.admin-filter-card label { flex:1; display:grid; gap:9px; color:#a9bac8; font-size:13px; font-weight:800; }
+.admin-filter-card select { width:100%; padding:14px; border:1px solid #3b627f; border-radius:12px; background:#071522; color:#fff; font-size:15px; font-weight:800; }
+.admin-summary { display:flex; gap:26px; margin:28px 4px 8px; }
+.admin-summary div { display:flex; align-items:baseline; gap:8px; }
+.admin-summary strong { font-size:38px; }
+.admin-summary span { color:#8fa5b6; font-size:13px; }
+.admin-item-head { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.admin-status { padding:5px 9px; border-radius:999px; font-size:11px; font-weight:900; }
+.admin-status-pending { background:#493d13; color:#ffe27a; }.admin-status-approved { background:#123e36; color:#7ce7ca; }.admin-status-rejected { background:#4b2028; color:#ff9caa; }
+.admin-item p b { display:inline-block; min-width:118px; color:#8fa5b6; }
+.admin-note { margin:10px 0; padding:10px; border-radius:9px; background:#341a20; color:#ffb1bb; font-size:12px; }
+.admin-actions .approve { background:#126653; border-color:#39d5b1; }.admin-actions .reject { background:#4a2028; border-color:#d76c7d; }
+.admin-home-link { display:block; margin:24px auto; color:#9fc6e3; text-align:center; text-decoration:none; }
+@media (max-width:560px) { .admin-account,.admin-filter-card { padding:16px; } .admin-account strong { font-size:13px; } .admin-filter-card { align-items:stretch; flex-direction:column; } .admin-filter-card button { width:100%; } .admin-item p b { display:block; margin-top:7px; } }

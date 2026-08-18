@@ -1425,7 +1425,7 @@ for (const grade of GRADES) {
     );
   }
 
-  // イン最強 / イン不安定 = 1コース逃げ率
+  // イン最強 / イン不 = 1コース逃げ率
   {
     const strong = [];
     for (const racer of gradeRacers) {
@@ -1466,7 +1466,7 @@ for (const grade of GRADES) {
     );
     await writeRanking(
       `ranking_in_unstable_${grade}.json`,
-      `${grade} イン不安定`,
+      `${grade} イン不`,
       unstable,
       "adjRate_asc",
       { grade, course: 1, metric: "nige_win_rate_per_start", default_min_n: 50 }
