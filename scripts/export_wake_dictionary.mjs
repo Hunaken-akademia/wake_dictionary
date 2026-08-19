@@ -580,6 +580,7 @@ await mkdir(resolve(OUT_DIR, "racers"), { recursive: true });
 
 const byCourse = groupBy(courseStats, "regno");
 const byVenue = groupBy(venueStats, "regno");
+const byVenueCourse = groupBy(rawVenueCourseStats, "regno");
 const byKimarite = groupBy(kimariteRows, "regno");
 const profileByRegno = new Map(racerProfiles.map((r) => [String(r.regno), r]));
 const kanaByRegno = new Map(racerKanaRows.map((r) => [String(r.regno), r]));
@@ -1710,23 +1711,33 @@ function buildInsightsForRacer(regno) {
     }
   }
 
-  // (4) 場別3連対率: 実測値と本人全場基準との差 ±10pt、n>=20
-  for (const row of byVenue.get(String(regno)) || []) {
-    if (Number(row.n || 0) < 20) continue;
-    const rawRate = Number(row.raw_ren3_rate);
-    const baselineRate = Number(row.personal_all_venue_ren3_rate);
+  // (4) 当地巧者: その場×そのコースの実測3連対率が
+  //     同じ場×同じコースの全選手平均より10pt以上高い、n>=20
+  for (const row of byVenueCourse.get(String(regno)) || []) {
+    const starts = Number(row.n || 0);
+    const placeNo = Number(row.place_no);
+    const course = Number(row.course);
+    if (starts < 20) continue;
+
+    const baseline = venueBaselineAcc.get(`${placeNo}|ALL|${course}`);
+    if (!baseline || Number(baseline.starts || 0) <= 0) continue;
+
+    const rawRate = ratePct(Number(row.ren3_n || 0), starts);
+    const baselineRate = ratePct(baseline.ren3, baseline.starts);
     const diff = rawRate - baselineRate;
-    if (!Number.isFinite(diff) || Math.abs(diff) < 10) continue;
+    if (!Number.isFinite(diff) || diff < 10) continue;
 
     candidates.push({
       type: "venue_ren3",
-      direction: diff > 0 ? "strong" : "weak",
-      place_no: Number(row.place_no),
-      n: Number(row.n),
+      direction: "strong",
+      place_no: placeNo,
+      course,
+      n: starts,
       raw_rate: pct(rawRate),
       baseline_rate: pct(baselineRate),
       diff_pt: pct(diff),
-      strength_ratio: pct(Math.abs(diff) / 10),
+      baseline_scope: "venue_same_course_all_racers",
+      strength_ratio: pct(diff / 10),
     });
   }
 
