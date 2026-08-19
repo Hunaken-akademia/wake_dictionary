@@ -353,7 +353,7 @@ async function getJson(path) {
   });
   if (r.status === 401) {
     if (token) renderGoogleAccess("Google認証の有効期限が切れました。もう一度ログインしてください。");
-    else renderLogin("認証の有効期限が切れました。もう一度パスワードを入力してください。");
+    else renderLogin("Googleでログインしてください。");
     throw new Error("authentication required");
   }
   if (!r.ok) throw new Error(`${path}: HTTP ${r.status}`);
@@ -371,48 +371,16 @@ function loginMarkup(message = "") {
         </div>
         <div class="kicker">MEMBERS ONLY</div>
         <h1>WAKE辞典へアクセス</h1>
-        <p>購入者向けパスワードを入力してください。この端末では認証状態を30日間保持します。</p>
+        <p>購入時に承認されたGoogleアカウントでログインしてください。</p>
         ${message ? `<div class="login-message">${esc(message)}</div>` : ""}
-        <form id="loginForm" class="login-form">
-          <input id="loginPassword" type="password" autocomplete="current-password" placeholder="パスワード" required>
-          <button class="primary" type="submit">辞典を開く</button>
-        </form>
-        <div class="login-divider"><span>管理者テスト</span></div>
-        <button id="googleLoginButton" class="google-login" type="button">Googleで申請・承認を試す</button>
-        <p class="beta-note">現在は管理者本人だけが利用できます。従来の購入者は上のパスワードで引き続き利用できます。</p>
-        <div class="login-foot">※ パスワードの第三者共有・転載は禁止転載は禁止です。</div>
+        <button id="googleLoginButton" class="primary access-action" type="button">Googleでログイン</button>
+        <p class="beta-note">未申請の場合は、ログイン後に購入証明を添付して利用申請できます。</p>
       </section>
     </main>`;
 }
 
 function renderLogin(message = "") {
   app.innerHTML = loginMarkup(message);
-  const form = $("#loginForm");
-  const input = $("#loginPassword");
-  input?.focus();
-  form?.addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const password = input?.value || "";
-    const button = form.querySelector("button");
-    button.disabled = true;
-    button.textContent = "確認中…";
-    try {
-      const r = await fetch("/api/login", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ password }),
-        credentials: "same-origin",
-      });
-      const data = await r.json().catch(() => ({}));
-      if (!r.ok) {
-        renderLogin(data?.error === "invalid_password" ? "パスワードが違います。" : "認証できませんでした。");
-        return;
-      }
-      await boot(true);
-    } catch {
-      renderLogin("通信エラーが発生しました。時間をおいてもう一度お試しください。");
-    }
-  });
   $("#googleLoginButton")?.addEventListener("click", startGoogleLogin);
 }
 
@@ -423,7 +391,7 @@ async function startGoogleLogin() {
     if (!response.ok || !data.authorizeUrl) throw new Error(data.error || "config_failed");
     location.href = data.authorizeUrl;
   } catch {
-    renderLogin("Google認証の準備がまだ完了していません。");
+    renderLogin("Google認証の準備が完了していません。");
   }
 }
 
@@ -500,7 +468,7 @@ async function renderGoogleAccess(message = "") {
     renderLogin(message || "Googleでログインしてください。");
     return;
   }
-  app.innerHTML = `<main class="login-page"><section class="login-card"><div class="kicker">GOOGLE ACCESS β</div><h1>申請状況を確認中…</h1></section></main>`;
+  app.innerHTML = `<main class="login-page"><section class="login-card"><div class="kicker">GOOGLE ACCESS</div><h1>申請状況を確認中…</h1></section></main>`;
   try {
     const status = await googleApi("/api/google-status");
     const approved = Boolean(status.entitlement);
@@ -508,7 +476,7 @@ async function renderGoogleAccess(message = "") {
     const expires = approved ? new Date(status.entitlement.expires_at).toLocaleDateString("ja-JP", { timeZone: "Asia/Tokyo" }) : "";
     app.innerHTML = `
       <main class="login-page"><section class="login-card">
-        <div class="brand login-brand"><span class="brand-mark">W</span><span>WAKE辞典<small>GOOGLE ACCESS β</small></span></div>
+        <div class="brand login-brand"><span class="brand-mark">W</span><span>WAKE辞典<small>GOOGLE ACCESS</small></span></div>
         <div class="kicker">APPLICATION → APPROVAL → LOGIN</div>
         <h1>${approved ? "承認済みです" : pending ? "申請済みです" : "Google利用申請"}</h1>
         <p>${esc(status.user.email)}</p>
@@ -526,13 +494,11 @@ async function renderGoogleAccess(message = "") {
         ${pending && status.isAdmin ? `<div class="login-message">申請済みです。管理画面から確認してください。</div>` : ""}
         ${status.isAdmin ? `<button id="openAdmin" class="primary access-action" type="button">承認管理画面を開く</button>` : ""}
         <button id="googleLogout" class="google-login access-action" type="button">Google認証を終了</button>
-        <button id="backToPassword" class="text-link access-action" type="button">パスワード入力へ戻る</button>
       </section></main>`;
     $("#requestAccess")?.addEventListener("click", submitGoogleApplication);
     $("#openAdmin")?.addEventListener("click", () => renderGoogleAdmin());
     $("#openDictionary")?.addEventListener("click", () => { location.hash = "#/"; boot(true); });
     $("#googleLogout")?.addEventListener("click", () => { localStorage.removeItem(GOOGLE_SESSION_KEY); renderLogin("Google認証を終了しました。"); });
-    $("#backToPassword")?.addEventListener("click", () => renderLogin());
   } catch (error) {
     if (error.message === "unauthorized" || error.message === "google_session_missing") localStorage.removeItem(GOOGLE_SESSION_KEY);
     renderLogin(error.message === "database_request_failed" ? "申請用テーブルの準備が必要です。" : "Google認証を確認できませんでした。");
@@ -541,8 +507,6 @@ async function renderGoogleAccess(message = "") {
 
 async function hasSession() {
   try {
-    const r = await fetch("/api/session", { cache: "no-store", credentials: "same-origin" });
-    if (r.ok) return true;
     if (!googleAccessToken()) return false;
     const status = await googleApi("/api/google-status");
     return Boolean(status.entitlement);
@@ -631,7 +595,8 @@ function bindGlobalControls() {
   $$("[data-logout]").forEach((b) => b.addEventListener("click", async () => {
     await fetch("/api/logout", { method: "POST", credentials: "same-origin" }).catch(() => {});
     localStorage.removeItem("wake_today_only");
-    renderLogin("この端末の認証を解除しました。");
+    localStorage.removeItem(GOOGLE_SESSION_KEY);
+    renderLogin("この端末のGoogle認証を解除しました。");
   }));
 
   $("#guideModal")?.addEventListener("click", (e) => {
@@ -2252,7 +2217,15 @@ async function renderRacer(regno) {
 async function boot(skipSessionCheck = false) {
   const callback = captureGoogleCallback();
   if (callback || location.hash === "#/google-access") {
-    await renderGoogleAccess(callback ? "Googleログインを確認しました。続けて利用申請してください。" : "");
+    await renderGoogleAccess(callback ? "Googleログインを確認しました。" : "");
+    return;
+  }
+  if (location.hash === "#/admin") {
+    if (!googleAccessToken()) {
+      renderLogin("承認管理画面を開くには管理者のGoogleアカウントでログインしてください。");
+      return;
+    }
+    await renderGoogleAdmin();
     return;
   }
   if (!skipSessionCheck) {
@@ -2319,6 +2292,7 @@ async function boot(skipSessionCheck = false) {
 async function route() {
   const h = location.hash.replace(/^#\/?/, "");
   if (h === "google-access") return renderGoogleAccess();
+  if (h === "admin") return renderGoogleAdmin();
   if (h.startsWith("racer/")) return renderRacer(h.split("/")[1]);
   if (h === "reverse") return renderReverse();
   if (h === "ranking") return renderRanking();
