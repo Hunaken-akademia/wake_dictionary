@@ -22,12 +22,12 @@ on:
         default: false
         type: boolean
   schedule:
-    # JST 08:00 = UTC 23:00 (previous day)
-    - cron: "0 23 * * *"
+    # JST 07:55 = UTC 22:55 (previous day). Avoid GitHub Actions congestion at :00.
+    - cron: "55 22 * * *"
 
 concurrency:
   group: wake-dictionary-production
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   build-and-deploy:
