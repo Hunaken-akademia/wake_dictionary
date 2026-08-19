@@ -435,31 +435,173 @@ async function submitGoogleApplication() {
   }
 }
 
-async function renderGoogleAdmin(message = "") {
+let googleAdminRows = [];
+let googleAdminFilter = "review";
+const googleAdminSelected = new Set();
+
+function googleAdminStatusLabel(status) {
+  return {
+    pending: "確認待ち",
+    proof_checked: "購入証明確認済み",
+    approved: "承認済み",
+    rejected: "却下済み",
+  }[status] || status;
+}
+
+function googleAdminDate(value) {
+  if (!value) return "—";
+  const d = new Date(value);
+  return Number.isFinite(d.getTime()) ? d.toLocaleString("ja-JP") : "—";
+}
+
+function filteredGoogleAdminRows() {
+  if (googleAdminFilter === "review") return googleAdminRows.filter((r) => r.status === "pending" || r.status === "proof_checked");
+  if (googleAdminFilter === "all") return googleAdminRows;
+  return googleAdminRows.filter((r) => r.status === googleAdminFilter);
+}
+
+function updateGoogleAdminSelection() {
+  const visible = filteredGoogleAdminRows();
+  const eligible = visible.filter((r) => r.status === "proof_checked").map((r) => r.id);
+  for (const id of [...googleAdminSelected]) if (!eligible.includes(id)) googleAdminSelected.delete(id);
+  const count = googleAdminSelected.size;
+  const countEl = $("#adminSelectedCount");
+  const bar = $("#adminBatchBar");
+  const button = $("#adminBatchApprove");
+  const selectAll = $("#adminSelectAll");
+  if (countEl) countEl.textContent = String(count);
+  if (bar) bar.classList.toggle("hidden", count === 0);
+  if (button) button.disabled = count === 0;
+  if (selectAll) {
+    selectAll.checked = eligible.length > 0 && eligible.every((id) => googleAdminSelected.has(id));
+    selectAll.indeterminate = count > 0 && !selectAll.checked;
+  }
+}
+
+function bindGoogleAdminControls() {
+  $("#adminLogout")?.addEventListener("click", () => {
+    localStorage.removeItem(GOOGLE_SESSION_KEY);
+    renderLogin("Google認証を終了しました。");
+  });
+  $("#adminReload")?.addEventListener("click", () => renderGoogleAdmin());
+  $("#adminFilter")?.addEventListener("change", (e) => {
+    googleAdminFilter = e.target.value;
+    googleAdminSelected.clear();
+    renderGoogleAdmin();
+  });
+  $("#adminSelectAll")?.addEventListener("change", (e) => {
+    googleAdminSelected.clear();
+    if (e.target.checked) {
+      filteredGoogleAdminRows().filter((r) => r.status === "proof_checked").slice(0, 50).forEach((r) => googleAdminSelected.add(r.id));
+    }
+    document.querySelectorAll("[data-admin-select]").forEach((box) => { box.checked = googleAdminSelected.has(box.dataset.adminSelect); });
+    updateGoogleAdminSelection();
+  });
+  document.querySelectorAll("[data-admin-select]").forEach((box) => box.addEventListener("change", () => {
+    if (box.checked) googleAdminSelected.add(box.dataset.adminSelect);
+    else googleAdminSelected.delete(box.dataset.adminSelect);
+    updateGoogleAdminSelection();
+  }));
+  document.querySelectorAll("[data-admin-proof]").forEach((b) => b.addEventListener("click", async () => {
+    try {
+      const d = await googleApi("/api/google-admin", "POST", { id: b.dataset.adminProof, action: "proof" });
+      window.open(d.url, "_blank", "noopener");
+    } catch { await renderGoogleAdmin("購入証明を開けませんでした。", "error"); }
+  }));
+  document.querySelectorAll("[data-admin-check]").forEach((b) => b.addEventListener("click", () => adminAction(b.dataset.adminCheck, "check")));
+  document.querySelectorAll("[data-admin-uncheck]").forEach((b) => b.addEventListener("click", () => adminAction(b.dataset.adminUncheck, "uncheck")));
+  document.querySelectorAll("[data-admin-approve]").forEach((b) => b.addEventListener("click", () => adminAction(b.dataset.adminApprove, "approve")));
+  document.querySelectorAll("[data-admin-reject]").forEach((b) => b.addEventListener("click", async () => {
+    const note = prompt("却下理由", "購入証明を確認できませんでした。正しい購入画面で再申請してください。");
+    if (note !== null) await adminAction(b.dataset.adminReject, "reject", note);
+  }));
+  $("#adminBatchApprove")?.addEventListener("click", approveGoogleAdminBatch);
+  $("#adminBack")?.addEventListener("click", () => renderGoogleAccess());
+  updateGoogleAdminSelection();
+}
+
+async function renderGoogleAdmin(message = "", kind = "ok") {
   try {
     const data = await googleApi("/api/google-admin");
-    const rows = data.applications || [];
-    app.innerHTML = `<main class="login-page"><section class="login-card admin-card">
-      <div class="kicker">WAKE辞典 管理者</div><h1>購入申請の承認</h1>
-      ${message ? `<div class="login-message">${esc(message)}</div>` : ""}
-      <div class="admin-list">${rows.map((r) => `<article class="admin-item">
-        <strong>${esc(r.buyer_name || "名称未入力")}</strong><p>${esc(r.google_email)}<br>購入：${r.purchased_at ? new Date(r.purchased_at).toLocaleString("ja-JP") : "-"}<br>状態：${esc(r.status)}</p>
-        <div class="admin-actions"><button data-proof="${r.id}">証明を見る</button>${r.status !== "approved" ? `<button data-approve="${r.id}">承認</button><button data-reject="${r.id}">却下</button>` : ""}</div>
-      </article>`).join("") || "<p>申請はありません。</p>"}</div>
-      <button id="adminBack" class="google-login">申請画面へ戻る</button>
-    </section></main>`;
-    document.querySelectorAll("[data-proof]").forEach((b) => b.onclick = async () => { const d = await googleApi("/api/google-admin", "POST", { id: b.dataset.proof, action: "proof" }); window.open(d.url, "_blank", "noopener"); });
-    document.querySelectorAll("[data-approve]").forEach((b) => b.onclick = async () => { await adminAction(b.dataset.approve, "approve"); });
-    document.querySelectorAll("[data-reject]").forEach((b) => b.onclick = async () => { const note = prompt("却下理由", "購入証明を確認できませんでした。"); if (note !== null) await adminAction(b.dataset.reject, "reject", note); });
-    $("#adminBack").onclick = () => renderGoogleAccess();
-  } catch { renderLogin("管理者画面を開けませんでした。"); }
+    googleAdminRows = data.applications || [];
+    const rows = filteredGoogleAdminRows();
+    const statusOptions = [
+      ["review","確認待ち・確認済み"],["pending","確認待ちのみ"],["proof_checked","確認済みのみ"],
+      ["approved","承認済み"],["rejected","却下済み"],["all","すべて"],
+    ];
+    app.innerHTML = `<main class="admin-page">
+      <header class="admin-hero">
+        <div class="admin-eyebrow">WAKE DICTIONARY ADMIN</div>
+        <h1>購入申請<br>管理画面</h1>
+        <p>購入証明を確認し、確認済みの申請だけをまとめて承認します。</p>
+      </header>
+      <section class="admin-account">
+        <div><span>管理者</span><strong>${esc(data.adminEmail || "")}</strong></div>
+        <button id="adminLogout" type="button">ログアウト</button>
+      </section>
+      <section class="admin-toolbar">
+        <label>表示する申請
+          <select id="adminFilter">${statusOptions.map(([v,l]) => `<option value="${v}" ${googleAdminFilter===v?"selected":""}>${l}</option>`).join("")}</select>
+        </label>
+        <button id="adminReload" type="button">再読み込み</button>
+      </section>
+      ${message ? `<div class="admin-notice ${kind}">${esc(message)}</div>` : ""}
+      <section class="admin-summary">
+        <div><strong>${rows.length}</strong><span>表示件数</span></div>
+        <label><input id="adminSelectAll" type="checkbox">確認済みを選択</label>
+      </section>
+      <section class="admin-list">
+        ${rows.length ? rows.map((r) => `<article class="admin-application ${r.status}">
+          <div class="admin-card-top">
+            <input data-admin-select="${r.id}" type="checkbox" ${r.status==="proof_checked"?"":"disabled"} ${googleAdminSelected.has(r.id)?"checked":""}>
+            <div><h2>${esc(r.buyer_name || "名称未入力")}</h2><p>${esc(r.google_email)}</p></div>
+            <span class="admin-badge ${r.status}">${esc(googleAdminStatusLabel(r.status))}</span>
+          </div>
+          <div class="admin-details">
+            <div><span>note購入日時</span><strong>${esc(googleAdminDate(r.purchased_at))}</strong></div>
+            <div><span>申請日時</span><strong>${esc(googleAdminDate(r.created_at))}</strong></div>
+            <div><span>証明確認日時</span><strong>${esc(googleAdminDate(r.proof_checked_at))}</strong></div>
+            <div><span>承認日時</span><strong>${esc(googleAdminDate(r.approved_at))}</strong></div>
+          </div>
+          ${r.admin_note ? `<div class="admin-reason">${esc(r.admin_note)}</div>` : ""}
+          <div class="admin-actions">
+            <button data-admin-proof="${r.id}">購入証明を開く</button>
+            ${r.status==="pending" ? `<button class="verify" data-admin-check="${r.id}">購入証明を確認済みにする</button>` : ""}
+            ${r.status==="proof_checked" ? `<button class="unverify" data-admin-uncheck="${r.id}">確認済みを解除</button><button class="approve" data-admin-approve="${r.id}">この1件を承認</button>` : ""}
+            ${["pending","proof_checked","rejected"].includes(r.status) ? `<button class="reject" data-admin-reject="${r.id}">${r.status==="rejected"?"却下理由を変更":"却下する"}</button>` : ""}
+          </div>
+        </article>`).join("") : `<section class="admin-empty"><h2>申請はありません</h2><p>現在の条件に一致する申請はありません。</p></section>`}
+      </section>
+      <button id="adminBack" class="admin-back" type="button">申請画面へ戻る</button>
+      <div id="adminBatchBar" class="admin-batch hidden"><div><strong id="adminSelectedCount">0</strong>件選択中</div><button id="adminBatchApprove">選択した申請をまとめて承認</button></div>
+    </main>`;
+    bindGoogleAdminControls();
+  } catch {
+    renderLogin("管理者画面を開けませんでした。");
+  }
 }
 
 async function adminAction(id, action, note = "") {
-  const token = googleAccessToken();
-  const r = await fetch("/api/google-admin", { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ id, action, note }) });
-  if (!r.ok) return renderGoogleAdmin("処理できませんでした。");
-  return renderGoogleAdmin(action === "approve" ? "承認しました。" : "却下しました。");
+  if (action === "check" && !confirm("この購入証明を確認済みにしますか？")) return;
+  if (action === "approve" && !confirm("この申請を承認しますか？")) return;
+  try {
+    await googleApi("/api/google-admin", "POST", { id, action, note });
+    googleAdminSelected.delete(id);
+    const messages = { check:"購入証明を確認済みにしました。", uncheck:"確認済みを解除しました。", approve:"承認しました。", reject:"却下しました。" };
+    await renderGoogleAdmin(messages[action] || "処理しました。", "ok");
+  } catch { await renderGoogleAdmin("処理できませんでした。", "error"); }
+}
+
+async function approveGoogleAdminBatch() {
+  const ids = [...googleAdminSelected].slice(0, 50);
+  if (!ids.length) return;
+  if (!confirm(`${ids.length}件をまとめて承認しますか？`)) return;
+  try {
+    const data = await googleApi("/api/google-admin", "POST", { action:"approve_batch", ids });
+    googleAdminSelected.clear();
+    const s = data.summary || {};
+    await renderGoogleAdmin(`一括承認が完了しました。承認：${s.approved||0}件／承認済み：${s.alreadyApproved||0}件／未確認：${s.proofNotChecked||0}件`, "ok");
+  } catch { await renderGoogleAdmin("一括承認できませんでした。", "error"); }
 }
 
 async function renderGoogleAccess(message = "") {
