@@ -1602,7 +1602,7 @@ function buildInsightsForRacer(regno) {
   const scope = GRADES.includes(grade) ? grade : "ALL";
   const candidates = [];
 
-  // (1) コース別1着率: 級別×コース基準との差 ±8pt、n>=30
+  // (1) コース別1着率: 実測値と級別×コース基準との差 ±8pt、n>=30
   for (let course = 1; course <= 6; course++) {
     const row = courseRowMap.get(`${regno}|${course}`);
     if (!row || Number(row.n || 0) < 30) continue;
@@ -1611,13 +1611,11 @@ function buildInsightsForRacer(regno) {
       baselineJson.grade_course?.[scope]?.[String(course)]?.win_rate;
     if (baselineRate == null) continue;
 
-    const adjustedRate = shrinkRatePct(
+    const rawRate = ratePct(
       Number(row.win_n || 0),
-      Number(row.n || 0),
-      Number(baselineRate),
-      SHRINK_K
+      Number(row.n || 0)
     );
-    const diff = adjustedRate - Number(baselineRate);
+    const diff = rawRate - Number(baselineRate);
 
     if (Math.abs(diff) >= 8) {
       candidates.push({
@@ -1625,7 +1623,7 @@ function buildInsightsForRacer(regno) {
         direction: diff > 0 ? "strong" : "weak",
         course,
         n: Number(row.n),
-        adjusted_rate: pct(adjustedRate),
+        raw_rate: pct(rawRate),
         baseline_rate: pct(baselineRate),
         diff_pt: pct(diff),
         baseline_scope: scope,
@@ -1651,10 +1649,8 @@ function buildInsightsForRacer(regno) {
         .find((x) => x.kimarite === kind.name);
       const count = Number(kimRow?.kimarite_n || 0);
 
-      const adjustedComp = 100 * (
-        count + KIMARITE_COMPOSITION_ALPHA * (Number(baselineComp) / 100)
-      ) / (winN + KIMARITE_COMPOSITION_ALPHA);
-      const diff = adjustedComp - Number(baselineComp);
+      const rawComp = ratePct(count, winN);
+      const diff = rawComp - Number(baselineComp);
 
       if (diff >= 20) {
         candidates.push({
@@ -1663,7 +1659,7 @@ function buildInsightsForRacer(regno) {
           kimarite: kind.name,
           win_n: winN,
           count,
-          adjusted_rate: pct(adjustedComp),
+          raw_rate: pct(rawComp),
           baseline_rate: pct(baselineComp),
           diff_pt: pct(diff),
           baseline_scope: scope,
@@ -1673,8 +1669,7 @@ function buildInsightsForRacer(regno) {
     }
   }
 
-  // (3) ST特性: コース平均を本人全体STへK=15で縮小し、
-  //     本人平均より0.02以上速い、n>=30
+  // (3) ST特性: コース別の実測平均STが0.13以下、n>=30
   const courseRows = [];
   let personalStSum = 0;
   let personalStN = 0;
@@ -1698,33 +1693,29 @@ function buildInsightsForRacer(regno) {
       const rawAvg = n(row.avg_st);
       if (starts < 30 || validN <= 0 || rawAvg == null) continue;
 
-      const adjustedAvg = shrinkMean(
-        rawAvg * validN,
-        validN,
-        personalAvgSt,
-        SHRINK_K
-      );
-      const diff = adjustedAvg - personalAvgSt;
+      const diff = rawAvg - personalAvgSt;
 
-      if (diff <= -0.02) {
+      if (rawAvg <= 0.13) {
         candidates.push({
           type: "st_fast",
           course: Number(row.course),
           n: starts,
           valid_st_n: validN,
-          adjusted_st: st(adjustedAvg),
+          avg_st: st(rawAvg),
           personal_avg_st: st(personalAvgSt),
           diff: st(diff),
-          strength_ratio: pct(Math.abs(diff) / 0.02),
+          strength_ratio: pct(Math.max(0, 0.13 - rawAvg) / 0.01 + 1),
         });
       }
     }
   }
 
-  // (4) 場別3連対率: 本人全場基準との差 ±10pt、n>=20
+  // (4) 場別3連対率: 実測値と本人全場基準との差 ±10pt、n>=20
   for (const row of byVenue.get(String(regno)) || []) {
     if (Number(row.n || 0) < 20) continue;
-    const diff = Number(row.adjusted_ren3_diff_pt);
+    const rawRate = Number(row.raw_ren3_rate);
+    const baselineRate = Number(row.personal_all_venue_ren3_rate);
+    const diff = rawRate - baselineRate;
     if (!Number.isFinite(diff) || Math.abs(diff) < 10) continue;
 
     candidates.push({
@@ -1732,8 +1723,8 @@ function buildInsightsForRacer(regno) {
       direction: diff > 0 ? "strong" : "weak",
       place_no: Number(row.place_no),
       n: Number(row.n),
-      adjusted_rate: pct(row.adjusted_ren3_rate),
-      baseline_rate: pct(row.personal_all_venue_ren3_rate),
+      raw_rate: pct(rawRate),
+      baseline_rate: pct(baselineRate),
       diff_pt: pct(diff),
       strength_ratio: pct(Math.abs(diff) / 10),
     });
@@ -1796,7 +1787,7 @@ for (const racer of racers) {
         selection_rule: "strongest_one_per_category_then_threshold_ratio_desc",
         items: insights,
         empty_message: insights.length ? null : "特筆すべき偏りなし",
-        note: "insight detection always uses shrinkage-adjusted values to avoid low-sample false positives",
+        note: "insight detection uses raw values after enforcing the minimum sample size for each category",
       },
       defense_1y: defensePayload(regno),
     }
