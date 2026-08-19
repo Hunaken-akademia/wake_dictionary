@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { authenticatedGoogleUser, isDictionaryAdmin } from "../lib/google-access.js";
+import { activeEntitlement, authenticatedGoogleUser } from "../lib/google-access.js";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "private-data");
 const PLACE_NAMES = [null,"桐生","戸田","江戸川","平和島","多摩川","浜名湖","蒲郡","常滑","津","三国","びわこ","住之江","尼崎","鳴門","丸亀","児島","宮島","徳山","下関","若松","芦屋","福岡","唐津","大村"];
@@ -47,7 +47,7 @@ export default async function handler(req, res) {
 
   const user = await authenticatedGoogleUser(req);
   if (!user) return res.status(401).json({ error: "unauthorized" });
-  if (!isDictionaryAdmin(user)) return res.status(403).json({ error: "admin_only" });
+  if (!await activeEntitlement(user)) return res.status(403).json({ error: "dictionary_access_required" });
 
   const venue = String(req.query?.venue || "");
   const regnos = String(req.query?.regnos || "").split(",").map(Number).filter((v) => Number.isInteger(v) && v > 0).slice(0, 6);
