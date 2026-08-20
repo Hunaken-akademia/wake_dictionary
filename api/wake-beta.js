@@ -19,9 +19,13 @@ function pct(value) {
   return Number.isFinite(value) ? Math.round(value * 100) / 100 : null;
 }
 
-function featureTitles(value, placeNo) {
+function featureTitles(value, placeNo, entryCourse) {
   const out = [];
   for (const item of value?.insights?.items || []) {
+    const itemCourse = Number(item?.course);
+    // Course-specific titles must match the actual exhibition entry course.
+    // Never award a title from a different course (for example 4C ST to a 2C entrant).
+    if (Number.isInteger(itemCourse) && itemCourse >= 1 && itemCourse <= 6 && itemCourse !== Number(entryCourse)) continue;
     let label = null;
     if (item.type === "kimarite_bias") label = item.kimarite === "差し" ? "差し名人" : item.kimarite === "まくり" ? "まくり職人" : item.kimarite === "まくり差し" ? "まくり差し巧者" : null;
     if (item.type === "venue_ren3" && item.direction === "strong" && Number(item.place_no) === Number(placeNo)) label = "当地巧者";
@@ -51,6 +55,11 @@ export default async function handler(req, res) {
 
   const venue = String(req.query?.venue || "");
   const regnos = String(req.query?.regnos || "").split(",").map(Number).filter((v) => Number.isInteger(v) && v > 0).slice(0, 6);
+  const requestedCourses = String(req.query?.courses || "").split(",").map(Number);
+  const entryCourses = Array.from({ length: 6 }, (_, index) => {
+    const course = requestedCourses[index];
+    return Number.isInteger(course) && course >= 1 && course <= 6 ? course : index + 1;
+  });
   const placeNo = PLACE_NAMES.indexOf(venue);
   if (placeNo < 1 || regnos.length !== 6) {
     return res.status(400).json({ error: "invalid_race" });
@@ -67,7 +76,7 @@ export default async function handler(req, res) {
       let nationalByCourse = {};
       let nationalCourses = [];
       let name = venueByRegno.get(regno)?.name || "";
-      try { titles = featureTitles(await json(`features/${regno}.json`), placeNo); } catch { /* optional */ }
+      try { titles = featureTitles(await json(`features/${regno}.json`), placeNo, entryCourses[index]); } catch { /* optional */ }
       try {
         const detail = await json(`racers/${regno}.json`);
         name = detail?.racer?.name || name;
