@@ -1,4 +1,5 @@
 name: Build and Deploy WAKE Dictionary
+# Regenerate paid data after course-specific title fixes.
 
 on:
   push:
