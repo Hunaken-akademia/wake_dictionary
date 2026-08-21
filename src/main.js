@@ -512,8 +512,13 @@ function bindGoogleAdminControls() {
   document.querySelectorAll("[data-admin-uncheck]").forEach((b) => b.addEventListener("click", () => adminAction(b.dataset.adminUncheck, "uncheck")));
   document.querySelectorAll("[data-admin-approve]").forEach((b) => b.addEventListener("click", () => adminAction(b.dataset.adminApprove, "approve")));
   document.querySelectorAll("[data-admin-reject]").forEach((b) => b.addEventListener("click", async () => {
-    const note = prompt("却下理由", "購入証明を確認できませんでした。正しい購入画面で再申請してください。");
-    if (note !== null) await adminAction(b.dataset.adminReject, "reject", note);
+    const id = b.dataset.adminReject;
+    const wasApproved = googleAdminRows.find((r) => r.id === id)?.status === "approved";
+    const note = prompt(
+      wasApproved ? "承認取り消しの理由" : "却下理由",
+      wasApproved ? "購入が確認できなかったため承認を取り消しました。" : "購入証明を確認できませんでした。正しい購入画面で再申請してください。",
+    );
+    if (note !== null) await adminAction(id, "reject", note);
   }));
   $("#adminBatchApprove")?.addEventListener("click", approveGoogleAdminBatch);
   $("#adminBack")?.addEventListener("click", () => renderGoogleAccess());
@@ -568,7 +573,7 @@ async function renderGoogleAdmin(message = "", kind = "ok") {
             <button data-admin-proof="${r.id}">購入証明を開く</button>
             ${r.status==="pending" ? `<button class="verify" data-admin-check="${r.id}">購入証明を確認済みにする</button>` : ""}
             ${r.status==="proof_checked" ? `<button class="unverify" data-admin-uncheck="${r.id}">確認済みを解除</button><button class="approve" data-admin-approve="${r.id}">この1件を承認</button>` : ""}
-            ${["pending","proof_checked","rejected"].includes(r.status) ? `<button class="reject" data-admin-reject="${r.id}">${r.status==="rejected"?"却下理由を変更":"却下する"}</button>` : ""}
+            ${["pending","proof_checked","rejected","approved"].includes(r.status) ? `<button class="reject" data-admin-reject="${r.id}">${r.status==="rejected"?"却下理由を変更":r.status==="approved"?"承認を取り消す":"却下する"}</button>` : ""}
           </div>
         </article>`).join("") : `<section class="admin-empty"><h2>申請はありません</h2><p>現在の条件に一致する申請はありません。</p></section>`}
       </section>
