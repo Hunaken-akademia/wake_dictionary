@@ -152,7 +152,7 @@ function todayEntry(regno) {
   return state.todayByRegno.get(Number(regno)) || null;
 }
 
-function todayRaceLabel(regno, placeNo = "ALL") {
+function todayRaceLabel(regno, placeNo = "ALL", course = "ALL") {
   const row = todayEntry(regno);
   if (!row?.entries?.length) return "";
 
@@ -160,6 +160,7 @@ function todayRaceLabel(regno, placeNo = "ALL") {
   for (const e of row.entries) {
     const p = Number(e.place_no);
     if (placeNo !== "ALL" && Number(placeNo) !== p) continue;
+    if (course !== "ALL" && Number(course) !== Number(e.boat_no)) continue;
     if (!byPlace.has(p)) byPlace.set(p, []);
     byPlace.get(p).push(Number(e.race_no));
   }
@@ -170,8 +171,8 @@ function todayRaceLabel(regno, placeNo = "ALL") {
   }).join(" / ");
 }
 
-function todayInline(regno, placeNo = "ALL") {
-  const label = todayRaceLabel(regno, placeNo);
+function todayInline(regno, placeNo = "ALL", course = "ALL") {
+  const label = todayRaceLabel(regno, placeNo, course);
   return label ? `<div class="today-inline">本日 ${esc(label)}</div>` : "";
 }
 
@@ -1107,7 +1108,7 @@ async function loadReverse() {
           <tbody>${rows.slice(0,200).map((r,i)=>`
             <tr data-open="${r.regno}">
               <td class="rank">${i+1}</td>
-              <td><strong>${esc(r.name)}</strong><div class="meta">#${r.regno}</div>${todayInline(r.regno)}</td>
+              <td><strong>${esc(r.name)}</strong><div class="meta">#${r.regno}</div>${todayInline(r.regno, placeNo, state.todayOnly && state.todayCourseOnly ? c : "ALL")}</td>
               <td>${esc(r.grade||"—")}</td>
               <td>${esc(r.branch||"—")}</td>
               <td>${r.n}</td>
@@ -1130,7 +1131,7 @@ async function loadReverse() {
             return `
               <tr data-open="${r.regno}">
                 <td class="rank">${i+1}</td>
-                <td><strong>${esc(r.name)}</strong><div class="meta">#${r.regno}</div>${todayInline(r.regno)}</td>
+                <td><strong>${esc(r.name)}</strong><div class="meta">#${r.regno}</div>${todayInline(r.regno, placeNo, state.todayOnly && state.todayCourseOnly ? c : "ALL")}</td>
                 <td>${esc(r.grade||"—")}</td>
                 <td>${esc(r.branch||"—")}</td>
                 <td>${r.n}</td>
