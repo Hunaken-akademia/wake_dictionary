@@ -274,8 +274,8 @@ try {
   const rankingCatalog = await readJson("index/ranking_catalog.json");
   const baselines = await readJson("meta/baselines.json");
 
-  const reverseCountOk = reverseCatalog.files.length === 6 * 6 * 5;
-  console.log(`[5] reverse index files=${reverseCatalog.files.length} expected=180 ${reverseCountOk?"PASS":"FAIL"}`);
+  const reverseCountOk = reverseCatalog.files.length === 6 * 7 * 5;
+  console.log(`[5] reverse index files=${reverseCatalog.files.length} expected=210 ${reverseCountOk?"PASS":"FAIL"}`);
   if (!reverseCountOk) failed = true;
 
   const baselineScopesOk = ["ALL","A1","A2","B1","B2"].every(
