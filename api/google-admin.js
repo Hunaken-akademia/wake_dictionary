@@ -138,6 +138,13 @@ export default async function handler(req, res) {
 
     if (action === "reject") {
       const note = String(req.body?.note || "購入証明を確認できませんでした。").slice(0, 300);
+      if (application.status === "approved") {
+        await rest(`dictionary_entitlements?product=eq.${PRODUCT}&user_id=eq.${encodeURIComponent(application.user_id)}`, {
+          method: "PATCH",
+          headers: { Prefer: "return=minimal" },
+          body: JSON.stringify({ status: "revoked", updated_at: now }),
+        });
+      }
       await rest(`dictionary_access_requests?id=eq.${encodeURIComponent(id)}`, {
         method: "PATCH",
         headers: { Prefer: "return=minimal" },
