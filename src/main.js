@@ -1704,6 +1704,9 @@ const RANKING_TYPES_V25 = [
   ["dash", "ダッシュ巧者（3連対率）"],
   ["start", "スタート巧者"],
   ["start_no_f", "スタート巧者（Fなし）"],
+  ["payout_volatile", "コース別 波乱レース出現率"],
+  ["payout_involvement", "コース別 万舟関与率"],
+  ["payout_average", "コース別 平均3連単配当"],
 ];
 
 const RANKING_DESC_V25 = {
@@ -1717,13 +1720,28 @@ const RANKING_DESC_V25 = {
   dash:"指定コースの3連対率を比較します。既定は4〜6コースです。",
   start:"指定コースの平均STを比較します。数字が小さいほど速い表示です。",
   start_no_f:"集計期間のFが0回の選手だけで、指定コースの平均STを比較します。",
+  payout_volatile:"実進入コースで出走したレースのうち、3連単が1万円以上になった割合です。2026年2月以降・20走以上・補正なしの実測値で比較します。",
+  payout_involvement:"実進入コースで3着以内に入ったレースのうち、3連単が1万円以上になった割合です。1〜4コースは3着以内20走以上、5・6コースは10走以上。補正は使いません。",
+  payout_average:"その選手が実進入コースから出走したレースの3連単平均配当です。2026年2月以降・20走以上・補正なしの実測値で比較します。",
 };
 
+function isPayoutRankingV25(type) {
+  return String(type || "").startsWith("payout_");
+}
+
 function rankingDefaultCoursesV25(type) {
+  if (isPayoutRankingV25(type)) return [1];
   if (type === "attack") return [3,4,5,6];
   if (type === "dash") return [4,5,6];
   if (type === "in_strong" || type === "in_unstable") return [1];
   return [1,2,3,4,5,6];
+}
+
+function payoutMinimumNV25(type, courses) {
+  if (type !== "payout_involvement") return 20;
+  return courses.length > 0 && courses.every((course) => course === 5 || course === 6)
+    ? 10
+    : 20;
 }
 function rankingCoursesV25(type, value) {
   if (!value || value === "DEFAULT") return rankingDefaultCoursesV25(type);
@@ -1823,8 +1841,122 @@ function buildRankingDataV25(data, {type, gradeValue, courseValue, femaleOnly}) 
   };
 }
 
+function buildPayoutRankingDataV25(data, {type, gradeValue, courseValue, femaleOnly}) {
+  const grades = rankingGradesV25(gradeValue);
+  const courses = rankingCoursesV25(type, courseValue);
+  const wanted = new Set(courses);
+  const rows = [];
+
+  for (const racer of data?.racers || []) {
+    if (!grades.includes(racer.grade)) continue;
+    if (femaleOnly && !(racer.is_female || racer.gender === "F")) continue;
+
+    const acc = {
+      starts: 0,
+      manbuneStarts: 0,
+      top3: 0,
+      manbuneTop3: 0,
+      payoutSum: 0,
+      maxPayout: 0,
+    };
+    for (const row of racer.courses || []) {
+      if (!wanted.has(Number(row.course))) continue;
+      acc.starts += Number(row.starts || 0);
+      acc.manbuneStarts += Number(row.manbune_starts || 0);
+      acc.top3 += Number(row.top3_finishes || 0);
+      acc.manbuneTop3 += Number(row.manbune_top3 || 0);
+      acc.payoutSum += Number(row.payout_sum || 0);
+      acc.maxPayout = Math.max(acc.maxPayout, Number(row.max_payout || 0));
+    }
+    if (!acc.starts) continue;
+
+    const avgPayout = acc.payoutSum / acc.starts;
+    const volatileRate = ratePctClient(acc.manbuneStarts, acc.starts);
+    const involvementRate = ratePctClient(acc.manbuneTop3, acc.top3);
+    const n = type === "payout_involvement" ? acc.top3 : acc.starts;
+    rows.push({
+      regno: Number(racer.regno),
+      name: racer.name || "",
+      grade: racer.grade || null,
+      branch: racer.branch || null,
+      gender: racer.gender || null,
+      is_female: Boolean(racer.is_female || racer.gender === "F"),
+      n,
+      starts: acc.starts,
+      top3_finishes: acc.top3,
+      manbune_starts: acc.manbuneStarts,
+      manbune_top3: acc.manbuneTop3,
+      rawRate: type === "payout_involvement" ? involvementRate : volatileRate,
+      avgPayout,
+      maxPayout: acc.maxPayout,
+    });
+  }
+
+  return {
+    rows,
+    metric: type === "payout_average" ? "payout_average"
+      : type === "payout_involvement" ? "manbune_involvement_rate"
+        : "manbune_volatile_rate",
+    sort: type === "payout_average" ? "avgPayout_desc" : "rawRate_desc",
+    courses,
+    grades,
+    adjustment: "none",
+    data_period: data?.data_period,
+  };
+}
+
+function yenV25(value) {
+  const amount = Number(value);
+  return Number.isFinite(amount) ? `${Math.round(amount).toLocaleString("ja-JP")}円` : "—";
+}
+
+function setPayoutRankingControlsV25(type, courses) {
+  const payout = isPayoutRankingV25(type);
+  const basis = $("#rankingBasis");
+  const raceClass = $("#rankingRaceClass");
+  const minN = $("#rankMinN");
+  const minNLabel = minN?.closest(".field")?.querySelector("label");
+  if (basis) {
+    basis.disabled = payout || ($("#rankingVenue")?.value || "ALL") === "ALL";
+    if (payout) basis.value = "ALL";
+  }
+  if (raceClass) {
+    raceClass.disabled = payout;
+    if (payout) raceClass.value = "ALL";
+  }
+  $$('[data-adjust-toggle]').forEach((input) => {
+    input.disabled = payout;
+    input.checked = payout ? false : state.useAdjusted;
+    const label = input.closest(".adjust-switch");
+    const status = label?.querySelector(".adjust-state");
+    if (status) status.textContent = payout ? "対象外" : (state.useAdjusted ? "ON" : "OFF");
+  });
+  const heading = $(".section-title > p");
+  if (heading) heading.textContent = payout
+    ? "補正なし・実測値で順位付け"
+    : (state.useAdjusted ? "補正値で順位付け" : "実測値で順位付け");
+  const modeTitle = $(".mode-panel strong");
+  const modeDescription = $(".mode-panel p");
+  if (modeTitle) modeTitle.textContent = payout ? "補正なし：配当実測データ" : modeText();
+  if (modeDescription) modeDescription.textContent = payout
+    ? "指定した母数以上の選手だけを、生の配当記録で比較します。"
+    : "級別・コース・女子条件を自由に組み合わせて比較できます。";
+  if (minN && payout) {
+    if (minNLabel) minNLabel.textContent = "最低母数";
+    const required = payoutMinimumNV25(type, courses);
+    minN.min = String(required);
+    if (Number(minN.value || 0) < required) minN.value = String(required);
+  } else if (minN) {
+    if (minNLabel) minNLabel.textContent = "最低走数";
+    minN.min = "1";
+  }
+}
+
 function rankingViewV25() {
   const selected = (value,current) => value===current ? "selected" : "";
+  const initialCourses = rankingCoursesV25(state.rankingType,state.rankingCourse);
+  const initialMinN = state.rankingType === "in_unstable" ? 50
+    : isPayoutRankingV25(state.rankingType) ? payoutMinimumNV25(state.rankingType,initialCourses) : 30;
   return `
     <section class="section shell">
       <div class="section-title">
@@ -1859,7 +1991,7 @@ function rankingViewV25() {
           <option value="WOMEN" ${selected("WOMEN",state.rankingRaceClass)}>女子戦</option>
           <option value="MIXED" ${selected("MIXED",state.rankingRaceClass)}>男女混合戦</option>
         </select></div>
-        <div class="field"><label>最低走数</label><input id="rankMinN" type="number" min="1" value="${state.rankingType==="in_unstable"?50:30}"></div>
+        <div class="field"><label>最低走数</label><input id="rankMinN" type="number" min="1" value="${initialMinN}"></div>
         <div class="field check-field"><label>選手条件</label><label class="compact-check"><input id="rankingFemaleOnly" type="checkbox" ${state.rankingFemaleOnly?"checked":""}><span>女子選手のみ</span></label></div>
         <div class="field action-field"><label>&nbsp;</label><button class="primary" id="rankReload">表示</button></div>
       </div>
@@ -1886,19 +2018,29 @@ async function loadRankingV25() {
   const gradeValue = $("#rankingGrade")?.value || state.rankingGrade;
   const courseValue = $("#rankingCourse")?.value || state.rankingCourse;
   const femaleOnly = Boolean($("#rankingFemaleOnly")?.checked);
-  const raceClass = $("#rankingRaceClass")?.value || "ALL";
-  const minN = Math.max(1,Number($("#rankMinN")?.value||30));
+  let raceClass = $("#rankingRaceClass")?.value || "ALL";
   const placeValue = $("#rankingVenue")?.value || "ALL";
   const placeNo = placeValue === "ALL" ? "ALL" : Number(placeValue);
-  const requestedBasis = $("#rankingBasis")?.value || "VENUE";
-  const effectiveBasis = placeNo === "ALL" ? "ALL" : requestedBasis;
+  let requestedBasis = $("#rankingBasis")?.value || "VENUE";
+  const payoutRanking = isPayoutRankingV25(type);
+  const selectedCourses = rankingCoursesV25(type, courseValue);
+  if (payoutRanking) {
+    requestedBasis = "ALL";
+    raceClass = "ALL";
+  }
+  setPayoutRankingControlsV25(type, selectedCourses);
+  const requiredMinN = payoutRanking ? payoutMinimumNV25(type, selectedCourses) : 1;
+  const minN = Math.max(requiredMinN, Number($("#rankMinN")?.value || (payoutRanking ? requiredMinN : 30)));
+  const effectiveBasis = payoutRanking || placeNo === "ALL" ? "ALL" : requestedBasis;
   Object.assign(state,{rankingType:type,rankingGrade:gradeValue,rankingCourse:courseValue,
     rankingFemaleOnly:femaleOnly,rankingRaceClass:raceClass,rankingVenue:String(placeValue),rankingBasis:requestedBasis});
   persistRankingV25();
 
   try {
     let source;
-    if (raceClass !== "ALL") {
+    if (payoutRanking) {
+      source = await getJson(`${DATA_ROOT}/index/payout_ranking_source.json`);
+    } else if (raceClass !== "ALL") {
       const historical = await getJson(`${DATA_ROOT}/index/historical_race_classes.json`);
       const classData = historical?.classes?.[raceClass];
       source = effectiveBasis === "ALL" ? classData?.all : classData?.venues?.[String(placeNo)];
@@ -1908,10 +2050,16 @@ async function loadRankingV25() {
         ? await getJson(`${DATA_ROOT}/index/ranking_source.json`)
         : await getJson(venueDataPath(placeNo));
     }
-    const data = buildRankingDataV25(source,{type,gradeValue,courseValue,femaleOnly});
+    const data = payoutRanking
+      ? buildPayoutRankingDataV25(source,{type,gradeValue,courseValue,femaleOnly})
+      : buildRankingDataV25(source,{type,gradeValue,courseValue,femaleOnly});
     let rows = data.rows.filter((r)=>Number(r.n)>=minN);
     if (state.todayOnly) rows = keepToday(rows,placeNo);
-    rows = sortRankingRows(rows,data);
+    rows = payoutRanking
+      ? [...rows].sort((a,b) => data.sort === "avgPayout_desc"
+        ? Number(b.avgPayout || 0) - Number(a.avgPayout || 0) || Number(b.n || 0) - Number(a.n || 0)
+        : Number(b.rawRate || 0) - Number(a.rawRate || 0) || Number(b.n || 0) - Number(a.n || 0))
+      : sortRankingRows(rows,data);
     if (state.todayOnly && placeNo !== "ALL") {
       const order = new Map(rows.map((r,i)=>[Number(r.regno),i]));
       rows = [...rows].sort((a,b)=>earliestTodayRaceNo(a.regno,placeNo)-earliestTodayRaceNo(b.regno,placeNo)
@@ -1925,7 +2073,8 @@ async function loadRankingV25() {
       <div class="ranking-context-row"><span class="ranking-venue-context">${esc(venueLabel)}・${esc(effectiveBasis==="ALL"?"全場成績":"選択場成績")}</span>
       <span class="ranking-basis-context">${esc(gradeLabel)}・${esc(rankingCourseLabelV25(data.courses))}</span>
       ${femaleOnly?`<span class="ranking-female-context">女子のみ</span>`:""}
-      ${raceClass!=="ALL"?`<span class="ranking-order-context">過去${raceClass==="WOMEN"?"女子戦":"男女混合戦"}成績</span>`:""}</div>`;
+      ${raceClass!=="ALL"?`<span class="ranking-order-context">過去${raceClass==="WOMEN"?"女子戦":"男女混合戦"}成績</span>`:""}
+      ${payoutRanking?`<span class="ranking-order-context">実進入・補正なし・最低n=${requiredMinN}</span>`:""}</div>`;
 
     if (!rows.length) {
       box.innerHTML = `<div class="empty">該当データなし</div>`;
@@ -1933,7 +2082,18 @@ async function loadRankingV25() {
     }
     const isST = data.metric === "avg_st";
     const metricLabel = rankingMetricLabel(data);
-    box.innerHTML = `<table><thead><tr><th>#</th><th>選手</th><th>級別</th><th>支部</th><th>母数(n)</th>
+    if (payoutRanking) {
+      const primaryLabel = type === "payout_average" ? "平均3連単配当"
+        : type === "payout_involvement" ? "万舟関与率" : "波乱レース出現率";
+      box.innerHTML = `<table><thead><tr><th>#</th><th>選手</th><th>級別</th><th>支部</th><th>母数(n)</th>
+        <th>${primaryLabel}</th><th>${type === "payout_average" ? "万舟出現率" : "平均配当"}</th><th>最高配当</th></tr></thead><tbody>
+        ${rows.slice(0,200).map((r,i)=>`<tr data-open="${r.regno}"><td class="rank">${i+1}</td>
+          <td><strong>${esc(r.name)}</strong>${rankingGenderBadgeV25(r)}<div class="meta">#${r.regno}</div>${todayInline(r.regno,placeNo)}</td>
+          <td>${esc(r.grade||"—")}</td><td>${esc(r.branch||"—")}</td><td>${r.n}</td>
+          <td class="rate">${type === "payout_average" ? yenV25(r.avgPayout) : `${fmt(r.rawRate)}%`}</td>
+          <td>${type === "payout_average" ? `${fmt(r.rawRate)}%` : yenV25(r.avgPayout)}</td><td>${yenV25(r.maxPayout)}</td>
+        </tr>`).join("")}</tbody></table>`;
+    } else box.innerHTML = `<table><thead><tr><th>#</th><th>選手</th><th>級別</th><th>支部</th><th>母数(n)</th>
       <th>${isST?"平均ST":esc(metricLabel)}</th>${isST?"<th>F</th>":"<th>基準差</th>"}</tr></thead><tbody>
       ${rows.slice(0,200).map((r,i)=>`<tr data-open="${r.regno}"><td class="rank">${i+1}</td>
         <td><strong>${esc(r.name)}</strong>${rankingGenderBadgeV25(r)}<div class="meta">#${r.regno}</div>${todayInline(r.regno,placeNo)}</td>
@@ -1957,7 +2117,18 @@ async function renderRanking() {
     .forEach((id)=>$(`#${id}`)?.addEventListener("change",()=>{
       if (id === "rankingType") {
         const input = $("#rankMinN");
-        if (input) input.value = $("#rankingType")?.value === "in_unstable" ? "50" : "30";
+        const nextType = $("#rankingType")?.value || "attack";
+        const nextCourses = rankingCoursesV25(nextType, $("#rankingCourse")?.value || "DEFAULT");
+        if (input) input.value = nextType === "in_unstable" ? "50"
+          : isPayoutRankingV25(nextType) ? String(payoutMinimumNV25(nextType,nextCourses)) : "30";
+      }
+      if (id === "rankingCourse") {
+        const nextType = $("#rankingType")?.value || "attack";
+        if (isPayoutRankingV25(nextType)) {
+          const input = $("#rankMinN");
+          const nextCourses = rankingCoursesV25(nextType, $("#rankingCourse")?.value || "DEFAULT");
+          if (input) input.value = String(payoutMinimumNV25(nextType,nextCourses));
+        }
       }
       reload();
     }));

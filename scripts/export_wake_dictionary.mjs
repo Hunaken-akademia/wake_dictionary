@@ -410,6 +410,25 @@ if (missingVenueCourse.length) {
 }
 console.log(`venue_course_cache_racers=${venueCourseCurrent.length}`);
 
+console.log("fetch payout ranking aggregates...");
+let payoutCourseRows;
+try {
+  payoutCourseRows = await fetchAllWithTimeoutRetry(
+    "wake_dictionary_payout_course_v1",
+    {
+      select: "regno,course,starts,manbune_starts,top3_finishes,manbune_top3,payout_sum,avg_payout,max_payout,first_race_date,last_race_date",
+      order: "regno.asc,course.asc",
+    }
+  );
+} catch (e) {
+  const msg = String(e?.message || e);
+  if (msg.includes("PGRST205") || msg.includes("404")) {
+    throw new Error("wake_dictionary_payout_course_v1 is not ready. Run sql/13_payout_rankings.sql first.");
+  }
+  throw e;
+}
+console.log(`payout_course_rows=${payoutCourseRows.length}`);
+
 const rawVenueCourseStats = venueCourseCurrent.flatMap((r) =>
   Array.isArray(r.rows) ? r.rows : []
 );
@@ -929,6 +948,46 @@ await writeJson(resolve(OUT_DIR, "index", "ranking_source.json"), {
   women_count: womenRegnos.size,
   baselines: baselineJson.grade_course,
   racers: rankingSourceRacers,
+});
+
+// v2.6: 3連単配当ランキング素材。
+// 艇番ではなく実進入コースで集計し、2026-02-01以降の実測値だけを保持する。
+const payoutByRegno = groupBy(payoutCourseRows, "regno");
+const payoutRankingRacers = racers.map((racer) => {
+  const regno = Number(racer.regno);
+  return {
+    regno,
+    name: racer.racer_name || "",
+    grade: gradeOf(regno),
+    branch: branchOf(regno),
+    gender: isFemale(regno) ? "F" : "M",
+    is_female: isFemale(regno),
+    courses: (payoutByRegno.get(String(regno)) || []).map((row) => ({
+      course: Number(row.course),
+      starts: Number(row.starts || 0),
+      manbune_starts: Number(row.manbune_starts || 0),
+      top3_finishes: Number(row.top3_finishes || 0),
+      manbune_top3: Number(row.manbune_top3 || 0),
+      payout_sum: Number(row.payout_sum || 0),
+      avg_payout: Number(row.avg_payout || 0),
+      max_payout: Number(row.max_payout || 0),
+    })),
+  };
+}).filter((racer) => racer.courses.length > 0);
+
+await writeJson(resolve(OUT_DIR, "index", "payout_ranking_source.json"), {
+  schema_version: 1,
+  generated_at: generatedAt,
+  data_period: { start: "2026-02-01", end: md.actual_end },
+  course_basis: "actual_entry_course",
+  payout_basis: "official_trifecta_payout_per_100_yen",
+  adjustment: "none",
+  thresholds: {
+    volatile_and_average_starts: 20,
+    involvement_top3_finishes_courses_1_to_4: 20,
+    involvement_top3_finishes_courses_5_to_6: 10,
+  },
+  racers: payoutRankingRacers,
 });
 
 

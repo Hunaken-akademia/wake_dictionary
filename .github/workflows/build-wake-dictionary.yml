@@ -142,6 +142,7 @@ jobs:
           test -f public/data/index/ranking_catalog.json
           test -f public/data/today_entries.json
           test -f public/data/index/ranking_source.json
+          test -f public/data/index/payout_ranking_source.json
           test -f public/data/index/historical_race_classes.json
           test -d public/data/features
           FEATURE_COUNT="$(find public/data/features -type f -name '*.json' | wc -l)"
