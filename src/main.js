@@ -98,7 +98,7 @@ const GUIDE_ITEMS = [
   ["まくられ耐性", "自分より外の選手が「まくり」で1着になった時に、自分が何着まで残したかを見る直近1年の実測データです。"],
   ["差され耐性", "自分より外の選手が「差し」で1着になった時に、自分が何着まで残したかを見る直近1年の実測データです。1件から表示し、8件未満は参考値として明示します。"],
   ["本日出走のみ", "本日レースに出走予定の選手だけに絞る機能です。場フィルターと組み合わせると、その場に本日出走する選手だけに絞ります。"],
-  ["場フィルター", "選択した場での過去成績だけを使って逆引き・ランキングを作り直します。本日出走のみON時は、本日開催している場だけを選べます。"],
+  ["場フィルター", "選択した場での過去成績だけを使って逆引き・ランキングを作り直します。本日出走のみON時は、本日開催している場だけを選べます。ただし逆引き検索で「本日そのコースで出走」もONの時は、場は今日の出走先を絞るだけに使い、成績は全場基準のまま変えません。"],
   ["ランキング成績基準", "「選択場の成績」はその場での過去成績で順位付け。「全場の成績」は全国24場を通した過去成績で順位付けし、選んだ場に本日出走する選手だけを抽出できます。"],
   ["紐推し", "1着固定ではなく2・3着候補として見つけやすいよう、指定コースの3連対率が高い選手を比較します。"],
   ["女子選手", "公式女子レーサー名鑑の現役選手だけに絞ります。B級の伏兵など他の条件とも同時に使えます。"],
@@ -954,7 +954,7 @@ function reverseFilters() {
         </div>
         <div class="field">
           <label>級別</label>
-          <select id="grade"><option value="ALL">全国</option><option>A1</option><option>A2</option><option>B1</option><option>B2</option></select>
+          <select id="grade"><option value="ALL">全て</option><option>A1</option><option>A2</option><option>B1</option><option>B2</option></select>
         </div>
         <div class="field">
           <label>場 <button class="mini-help" data-guide-open type="button">?</button></label>
@@ -1061,11 +1061,15 @@ async function loadReverse() {
 
   box.innerHTML = `<div class="empty">読み込み中…</div>`;
 
+  // 本日そのコースで出走をONにしている時は、場は「今日どこで走るか」の絞り込みだけに使い、
+  // 成績・ランキングは全場（全国）基準のまま変えない。
+  const useNationalSource = placeNo === "ALL" || (state.todayOnly && state.todayCourseOnly);
+
   try {
     let data;
     let sourceRows;
 
-    if (placeNo === "ALL") {
+    if (useNationalSource) {
       data = await getJson(
         `${DATA_ROOT}/index/reverse_course${c}_${slug}_${grade}.json`
       );
