@@ -1162,17 +1162,25 @@ await writeJson(resolve(OUT_DIR, "meta", "baselines.json"), baselineJson);
 
 // ----------------------------------------------------------------------------
 // ★1 逆引き検索
-// 6コース × 6決まり手 × (ALL + A1/A2/B1/B2)
+// 6コース × (全て + 6決まり手) × (ALL + A1/A2/B1/B2)
+// 「全て」はそのコースの1着率そのもの（決まり手を問わない）。
 // ----------------------------------------------------------------------------
+const REVERSE_KIMARITE_KINDS = [
+  { name: "全て", slug: "all" },
+  ...KIMARITE_KINDS,
+];
+
 const reverseCatalog = [];
 let reverseFileCount = 0;
 
 for (let course = 1; course <= 6; course++) {
-  for (const kind of KIMARITE_KINDS) {
+  for (const kind of REVERSE_KIMARITE_KINDS) {
+    const isAll = kind.slug === "all";
     for (const scope of GRADE_SCOPES) {
-      const baselineRate =
-        baselineJson.grade_course[scope][String(course)]
-          .kimarite_win_rate_per_start[kind.name];
+      const baselineRate = isAll
+        ? baselineJson.grade_course[scope][String(course)].win_rate
+        : baselineJson.grade_course[scope][String(course)]
+            .kimarite_win_rate_per_start[kind.name];
 
       const rows = [];
 
@@ -1185,9 +1193,12 @@ for (let course = 1; course <= 6; course++) {
         if (!courseRow) continue;
 
         const starts = Number(courseRow.n || 0);
-        const kimRow = (kimRowsByCell.get(`${regno}|${course}`) || [])
-          .find((x) => x.kimarite === kind.name);
-        const count = Number(kimRow?.kimarite_n || 0);
+        const count = isAll
+          ? Number(courseRow.win_n || 0)
+          : Number(
+              (kimRowsByCell.get(`${regno}|${course}`) || [])
+                .find((x) => x.kimarite === kind.name)?.kimarite_n || 0
+            );
 
         const rawRate = ratePct(count, starts);
         const adjRate = shrinkRatePct(count, starts, baselineRate);

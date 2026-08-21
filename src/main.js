@@ -34,6 +34,8 @@ const state = {
   todayMetaStatus: "loading",
   todayByRegno: new Map(),
   reverseVenue: localStorage.getItem("wake_reverse_venue") || "ALL",
+  reverseKimarite: localStorage.getItem("wake_reverse_kimarite") || "nige",
+  todayCourseOnly: localStorage.getItem("wake_today_course_only") === "1",
   rankingVenue: localStorage.getItem("wake_ranking_venue") || "ALL",
   // VENUE = 選択場での過去成績 / ALL = 全場での過去成績
   rankingBasis: localStorage.getItem("wake_ranking_basis") || "VENUE",
@@ -52,6 +54,10 @@ const KIMARITE = [
   ["抜き", "nuki"],
   ["恵まれ", "megumare"],
 ];
+
+// 逆引き検索の決まり手セレクトだけに使う。「全て」はコース1着率そのもの（決まり手を問わない）で、
+// KIMARITE（決まり手構成の集計に使う実データキー）には含めない。
+const REVERSE_KIMARITE = [["全て", "all"], ...KIMARITE];
 
 const RANKING_DESCRIPTIONS = {
   "ranking_b_attackers.json":
@@ -232,6 +238,37 @@ function bindTodayToggle(onChange) {
       else route();
     });
   });
+}
+
+// 逆引き検索専用。「本日出走のみ」がONの時だけ表示し、選択中のコースで
+// 本日出走予定の選手だけにさらに絞り込む（号艇＝予定コースとして判定）。
+function todayCourseFilterControl() {
+  if (!state.todayOnly) return "";
+  return `
+    <label class="today-filter">
+      <input type="checkbox" data-today-course-toggle ${state.todayCourseOnly ? "checked" : ""}>
+      <span class="today-check"></span>
+      <span>本日そのコースで出走</span>
+    </label>`;
+}
+
+function bindTodayCourseToggle(onChange) {
+  $$("[data-today-course-toggle]").forEach((input) => {
+    input.addEventListener("change", (e) => {
+      state.todayCourseOnly = Boolean(e.target.checked);
+      localStorage.setItem("wake_today_course_only", state.todayCourseOnly ? "1" : "0");
+      if (typeof onChange === "function") onChange();
+      else route();
+    });
+  });
+}
+
+function todayAtCourse(regno, course, placeNo = "ALL") {
+  const row = todayEntry(regno);
+  return Boolean(row?.entries?.some((e) =>
+    (placeNo === "ALL" || Number(e.place_no) === Number(placeNo))
+      && Number(e.boat_no) === Number(course)
+  ));
 }
 
 function todayActivePlaces() {
@@ -912,7 +949,7 @@ function reverseFilters() {
         </div>
         <div class="field">
           <label>決まり手</label>
-          <select id="kimarite">${KIMARITE.map(([n,s])=>`<option value="${s}" data-name="${n}">${n}</option>`).join("")}</select>
+          <select id="kimarite">${REVERSE_KIMARITE.map(([n,s])=>`<option value="${s}" data-name="${n}" ${state.reverseKimarite===s?"selected":""}>${n}</option>`).join("")}</select>
         </div>
         <div class="field">
           <label>級別</label>
@@ -930,6 +967,7 @@ function reverseFilters() {
 
       <div class="sub-filter-row">
         ${todayFilterControl()}
+        ${todayCourseFilterControl()}
         ${state.todayOnly ? `<span class="sub-filter-note">本日出走時は、特定場を選ぶと出走Rの早い順に表示</span>` : ""}
       </div>
 
@@ -964,9 +1002,10 @@ function sortReverseRows(rows) {
 
 
 function buildVenueReverseRows(data, course, kimariteName, gradeScope) {
+  const isAll = kimariteName === "全て";
   const baseline = data?.baselines?.[gradeScope]?.[String(course)];
   const baselineRate = Number(
-    baseline?.kimarite_win_rate_per_start?.[kimariteName]
+    isAll ? baseline?.win_rate : baseline?.kimarite_win_rate_per_start?.[kimariteName]
   );
   if (!Number.isFinite(baselineRate)) return [];
 
@@ -978,7 +1017,7 @@ function buildVenueReverseRows(data, course, kimariteName, gradeScope) {
     if (!c || Number(c.n || 0) < 1) continue;
 
     const n = Number(c.n || 0);
-    const count = Number(c.kimarite?.[kimariteName] || 0);
+    const count = isAll ? Number(c.win_n || 0) : Number(c.kimarite?.[kimariteName] || 0);
     const rawRate = ratePctClient(count, n);
     const adjRate = shrinkRatePctClient(
       count, n, baselineRate, Number(data.shrinkage_k || 15)
@@ -1014,6 +1053,10 @@ async function loadReverse() {
 
   state.reverseVenue = String(placeValue);
   localStorage.setItem("wake_reverse_venue", state.reverseVenue);
+  state.reverseKimarite = slug;
+  localStorage.setItem("wake_reverse_kimarite", state.reverseKimarite);
+
+  const countLabel = slug === "all" ? "1着" : `${name}1着`;
 
   box.innerHTML = `<div class="empty">読み込み中…</div>`;
 
@@ -1040,12 +1083,14 @@ async function loadReverse() {
       );
     }
 
-    const rows = sortReverseRows(
-      keepToday(
-        sourceRows.filter((r) => Number(r.n) >= minN),
-        placeNo
-      )
+    let filteredRows = keepToday(
+      sourceRows.filter((r) => Number(r.n) >= minN),
+      placeNo
     );
+    if (state.todayOnly && state.todayCourseOnly) {
+      filteredRows = filteredRows.filter((r) => todayAtCourse(r.regno, c, placeNo));
+    }
+    const rows = sortReverseRows(filteredRows);
 
     if (!rows.length) {
       box.innerHTML = `<div class="empty">条件に該当する選手はいません</div>`;
@@ -1057,7 +1102,7 @@ async function loadReverse() {
         <table>
           <thead><tr>
             <th>#</th><th>選手</th><th>級別</th><th>支部</th><th>母数(n)</th>
-            <th>${esc(name)}1着</th><th>実測</th><th>補正</th><th>基準差</th>
+            <th>${esc(countLabel)}</th><th>実測</th><th>補正</th><th>基準差</th>
           </tr></thead>
           <tbody>${rows.slice(0,200).map((r,i)=>`
             <tr data-open="${r.regno}">
@@ -1078,7 +1123,7 @@ async function loadReverse() {
         <table>
           <thead><tr>
             <th>#</th><th>選手</th><th>級別</th><th>支部</th><th>母数(n)</th>
-            <th>${esc(name)}1着</th><th>実測</th><th>基準値</th><th>実測基準差</th>
+            <th>${esc(countLabel)}</th><th>実測</th><th>基準値</th><th>実測基準差</th>
           </tr></thead>
           <tbody>${rows.slice(0,200).map((r,i)=>{
             const rawDiff = Number(r.rawRate) - Number(r.baselineRate);
@@ -1128,6 +1173,7 @@ async function renderReverse() {
   });
 
   bindTodayToggle(() => renderReverse());
+  bindTodayCourseToggle(loadReverse);
   loadReverse();
 }
 
