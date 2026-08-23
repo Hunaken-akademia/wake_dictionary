@@ -429,6 +429,25 @@ try {
 }
 console.log(`payout_course_rows=${payoutCourseRows.length}`);
 
+console.log("fetch ST sync ranking aggregates...");
+let stSyncRows;
+try {
+  stSyncRows = await fetchAllWithTimeoutRetry(
+    "wake_dictionary_st_sync_v1",
+    {
+      select: "regno,n,sync_n,avg_abs_diff,avg_exhibition_st,avg_actual_st,first_race_date,last_race_date",
+      order: "regno.asc",
+    }
+  );
+} catch (e) {
+  const msg = String(e?.message || e);
+  if (msg.includes("PGRST205") || msg.includes("404")) {
+    throw new Error("wake_dictionary_st_sync_v1 is not ready. Run sql/14_st_sync_ranking.sql first.");
+  }
+  throw e;
+}
+console.log(`st_sync_rows=${stSyncRows.length}`);
+
 const rawVenueCourseStats = venueCourseCurrent.flatMap((r) =>
   Array.isArray(r.rows) ? r.rows : []
 );
@@ -988,6 +1007,42 @@ await writeJson(resolve(OUT_DIR, "index", "payout_ranking_source.json"), {
     involvement_top3_finishes_courses_5_to_6: 10,
   },
   racers: payoutRankingRacers,
+});
+
+// v2.7: 展示ST×本番STシンクロ率ランキング素材。
+// コース非依存(選手単位の通期集計)。exhibition.stの保存開始以降のみが対象になる。
+const stSyncRankingRacers = stSyncRows
+  .map((row) => {
+    const regno = Number(row.regno);
+    const nRow = Number(row.n || 0);
+    const syncN = Number(row.sync_n || 0);
+    return {
+      regno,
+      name: racers.find((r) => Number(r.regno) === regno)?.racer_name || "",
+      grade: gradeOf(regno),
+      branch: branchOf(regno),
+      gender: isFemale(regno) ? "F" : "M",
+      is_female: isFemale(regno),
+      n: nRow,
+      sync_n: syncN,
+      sync_rate: nRow > 0 ? pct(ratePct(syncN, nRow)) : null,
+      avg_abs_diff: st(row.avg_abs_diff),
+      avg_exhibition_st: st(row.avg_exhibition_st),
+      avg_actual_st: st(row.avg_actual_st),
+      first_race_date: row.first_race_date,
+      last_race_date: row.last_race_date,
+    };
+  })
+  .filter((racer) => racer.n > 0);
+
+await writeJson(resolve(OUT_DIR, "index", "st_sync_ranking.json"), {
+  schema_version: 1,
+  generated_at: generatedAt,
+  data_period: { start: null, end: md.actual_end, note: "exhibition.st保存開始以降のみ(コース非依存)" },
+  sync_threshold_sec: 0.05,
+  default_min_n: 20,
+  excludes: "本番STがフライング(is_f=true)のレースは除外",
+  racers: stSyncRankingRacers,
 });
 
 
