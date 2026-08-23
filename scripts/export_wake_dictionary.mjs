@@ -1039,7 +1039,7 @@ await writeJson(resolve(OUT_DIR, "index", "st_sync_ranking.json"), {
   schema_version: 1,
   generated_at: generatedAt,
   data_period: { start: null, end: md.actual_end, note: "exhibition.st保存開始以降のみ(コース非依存)" },
-  sync_threshold_sec: 0.05,
+  sync_threshold_sec: 0.02,
   default_min_n: 20,
   excludes: "本番STがフライング(is_f=true)のレースは除外",
   racers: stSyncRankingRacers,
