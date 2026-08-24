@@ -17,12 +17,68 @@ function captureGoogleCallback() {
   if (!location.search.includes("dictionary_oauth=1")) return false;
   const params = new URLSearchParams(location.hash.replace(/^#/, ""));
   const accessToken = params.get("access_token");
+  const refreshToken = params.get("refresh_token");
   if (accessToken) {
     const expiresIn = Number(params.get("expires_in") || 3600);
-    localStorage.setItem(GOOGLE_SESSION_KEY, JSON.stringify({ accessToken, expiresAt: Date.now() + expiresIn * 1000 }));
+    localStorage.setItem(GOOGLE_SESSION_KEY, JSON.stringify({
+      accessToken,
+      refreshToken: refreshToken || "",
+      expiresAt: Date.now() + expiresIn * 1000,
+    }));
   }
   history.replaceState(null, "", `${location.pathname}#/google-access`);
   return Boolean(accessToken);
+}
+
+// Supabaseのaccess_tokenは1時間前後で失効するが、同じ応答に含まれる
+// refresh_tokenを保存・使い回すことで、ユーザーがGoogleへ再ログインし直す
+// 頻度を大きく減らせる(refresh_tokenは明示ログアウト/失効まで有効)。
+let googleRefreshInFlight = null;
+async function refreshGoogleSession() {
+  if (googleRefreshInFlight) return googleRefreshInFlight;
+  const session = googleSession();
+  const refreshToken = session?.refreshToken;
+  if (!refreshToken) return false;
+  googleRefreshInFlight = (async () => {
+    try {
+      const configRes = await fetch("/api/google-config", { cache: "no-store" });
+      const config = await configRes.json();
+      if (!configRes.ok || !config.supabaseUrl || !config.publishableKey) return false;
+      const res = await fetch(`${config.supabaseUrl}/auth/v1/token?grant_type=refresh_token`, {
+        method: "POST",
+        headers: { apikey: config.publishableKey, "Content-Type": "application/json" },
+        body: JSON.stringify({ refresh_token: refreshToken }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.access_token) {
+        localStorage.removeItem(GOOGLE_SESSION_KEY);
+        return false;
+      }
+      const expiresIn = Number(data.expires_in || 3600);
+      localStorage.setItem(GOOGLE_SESSION_KEY, JSON.stringify({
+        accessToken: data.access_token,
+        refreshToken: data.refresh_token || refreshToken,
+        expiresAt: Date.now() + expiresIn * 1000,
+      }));
+      return true;
+    } catch {
+      return false;
+    }
+  })();
+  try {
+    return await googleRefreshInFlight;
+  } finally {
+    googleRefreshInFlight = null;
+  }
+}
+
+// アクセストークンが無い/まもなく失効する場合は、表示中に静かに更新しておく。
+async function ensureFreshGoogleSession() {
+  const session = googleSession();
+  if (!session?.refreshToken) return Boolean(googleAccessToken());
+  const soonExpiring = !session.expiresAt || session.expiresAt - Date.now() < 10 * 60 * 1000;
+  if (soonExpiring) return refreshGoogleSession();
+  return true;
 }
 
 const state = {
@@ -383,12 +439,20 @@ async function getJson(path) {
   const target = isDataPath
     ? `/api/data?path=${encodeURIComponent(path.slice(DATA_ROOT.length + 1))}`
     : path;
-  const token = googleAccessToken();
-  const r = await fetch(target, {
-    cache: "no-store",
-    credentials: "same-origin",
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
-  });
+  const fetchWithToken = () => {
+    const token = googleAccessToken();
+    return fetch(target, {
+      cache: "no-store",
+      credentials: "same-origin",
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    }).then((r) => ({ r, token }));
+  };
+  let { r, token } = await fetchWithToken();
+  // 401はaccess_tokenが失効しているだけの可能性が高いので、再ログインを
+  // 求める前にrefresh_tokenでの静かな更新とリトライを1回だけ試す。
+  if (r.status === 401 && (await refreshGoogleSession())) {
+    ({ r, token } = await fetchWithToken());
+  }
   if (r.status === 401) {
     if (token) renderGoogleAccess("Google認証の有効期限が切れました。もう一度ログインしてください。");
     else renderLogin("Googleでログインしてください。");
@@ -692,6 +756,7 @@ async function renderGoogleAccess(message = "") {
 
 async function hasSession() {
   try {
+    if (!googleAccessToken()) await refreshGoogleSession();
     if (!googleAccessToken()) return false;
     const status = await googleApi("/api/google-status");
     return Boolean(status.entitlement);
@@ -2748,3 +2813,10 @@ async function route() {
 
 window.addEventListener("hashchange", route);
 boot();
+
+// タブを開いたままの間、access_tokenが失効する前に定期的に静かに更新しておく。
+// これによりrefresh_tokenが有効な限り(明示ログアウトまで)再ログインなしで使い続けられる。
+setInterval(() => { ensureFreshGoogleSession().catch(() => {}); }, 5 * 60 * 1000);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") ensureFreshGoogleSession().catch(() => {});
+});
