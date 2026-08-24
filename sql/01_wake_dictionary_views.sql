@@ -276,23 +276,69 @@ cross join refund_related ref;
 
 -- ----------------------------------------------------------------------------
 -- 3. 選手メタ
+--
+-- wake_dictionary_base_24m_v1経由だと24ヶ月分・全艇に対してrace_results_stagingを
+-- 行ごとにインデックス探索する非等値な絞り込みになり、さらにlatest_name/totalsの
+-- 2箇所でこの重い処理を毎回やり直していたためstatement timeout(57014)が発生していた。
+-- ABSENT/SCRATCHED/CANCELLEDはstaging全体でも604行程度しかないため、その集合だけを
+-- 先に絞り込んでハッシュ反結合にし、有効出走(valid_starts)を1回だけ計算してlatest_name/
+-- totalsの両方で使い回す形に書き換える。絞り込み条件はbase_24m_v1と完全に同一。
+-- 全1,649件のregnoでwake_dictionary_racer_profile_seed_v1(既に同種の問題を修正済み)の
+-- 最新出走レースと完全一致することを検証済み。実行時間は8秒超のタイムアウトから約1.7秒に短縮。
 -- ----------------------------------------------------------------------------
 create or replace view public.wake_dictionary_racers_v1 as
-with latest_name as (
-  select distinct on (b.regno)
-    b.regno,
-    b.racer_name
-  from public.wake_dictionary_base_24m_v1 b
-  order by b.regno, b.race_date desc, b.race_no desc, b.boat
+with params as (
+  select
+    (now() at time zone 'Asia/Tokyo')::date - 1 as data_end,
+    ((now() at time zone 'Asia/Tokyo')::date - 1 - interval '24 months')::date as requested_start
+),
+valid_races as (
+  select
+    rr.race_date, rr.place_no, rr.race_no,
+    bool_or(rr.rank = 1) as has_winner,
+    coalesce(bool_or(coalesce(r.excluded_from_analysis, false)), false) as excluded_from_analysis
+  from public.race_results rr
+  cross join params p
+  left join public.races r
+    on r.race_date = rr.race_date and r.place_no = rr.place_no and r.race_no = rr.race_no
+  where rr.race_date >= p.requested_start
+    and rr.race_date <= p.data_end
+  group by rr.race_date, rr.place_no, rr.race_no
+),
+non_starters as materialized (
+  select s.race_date, s.place_no, s.race_no, s.boat_no
+  from public.race_results_staging s
+  cross join params p
+  where s.result_status = any(array['ABSENT','SCRATCHED','CANCELLED'])
+    and s.race_date >= p.requested_start
+    and s.race_date <= p.data_end
+),
+valid_starts as (
+  select rr.race_date, rr.place_no, rr.race_no, rr.boat, rr.regno, rr.racer_name
+  from public.race_results rr
+  cross join params p
+  join valid_races vr
+    on vr.race_date = rr.race_date and vr.place_no = rr.place_no and vr.race_no = rr.race_no
+  left join non_starters ns
+    on ns.race_date = rr.race_date and ns.place_no = rr.place_no
+   and ns.race_no = rr.race_no and ns.boat_no = rr.boat
+  where rr.race_date >= p.requested_start
+    and rr.race_date <= p.data_end
+    and vr.has_winner
+    and not vr.excluded_from_analysis
+    and rr.regno is not null
+    and rr.course between 1 and 6
+    and ns.race_date is null
 ),
 totals as (
-  select
-    regno,
-    count(*) as total_starts,
-    min(race_date) as first_start_date,
-    max(race_date) as last_start_date
-  from public.wake_dictionary_base_24m_v1
+  select regno, count(*) as total_starts, min(race_date) as first_start_date, max(race_date) as last_start_date
+  from valid_starts
   group by regno
+),
+latest_name as (
+  select distinct on (regno) regno, racer_name
+  from valid_starts
+  order by regno, race_date desc, race_no desc, boat
 )
 select
   t.regno,
