@@ -10,5 +10,11 @@
       "includeFiles": "private-data/**",
       "maxDuration": 10
     }
-  }
+  },
+  "crons": [
+    {
+      "path": "/api/cron-trigger-build",
+      "schedule": "55 22 * * *"
+    }
+  ]
 }
