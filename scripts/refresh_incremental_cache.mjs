@@ -198,7 +198,10 @@ console.log("WAKE dictionary v2.3.2 incremental cache refresh start");
 console.log(`force_full=${FORCE_FULL}`);
 
 // Supabaseの重いmetadata VIEWと他queryを同時に走らせない。
-const metadataRows = await fetchRetry("wake_dictionary_metadata_v1");
+// VIEWを直接叩くとPostgREST接続既定のstatement_timeout(8s)に対し実運用データ量
+// (24ヶ月・36万行超)では不安定に超過するため、この集計だけstatement_timeoutを
+// 緩和したRPC関数(wake_dictionary_metadata_v1_fn, STABLEなのでGETで呼べる)経由にする。
+const metadataRows = await fetchRetry("rpc/wake_dictionary_metadata_v1_fn");
 const racers = await fetchRetry("wake_dictionary_racers_v1",{order:"regno.asc"});
 const cacheMeta = await fetchRetry("wake_dictionary_incremental_cache_v1",{
   select:"regno,data_end,period_start_24m,defense_start_1y",
