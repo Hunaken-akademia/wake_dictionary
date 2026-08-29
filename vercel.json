@@ -14,7 +14,7 @@
   "crons": [
     {
       "path": "/api/cron-trigger-build",
-      "schedule": "55 22 * * *"
+      "schedule": "10 23 * * *"
     }
   ]
 }

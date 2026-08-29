@@ -23,8 +23,11 @@ on:
         default: false
         type: boolean
   schedule:
-    # JST 07:55 = UTC 22:55 (previous day). Avoid GitHub Actions congestion at :00.
-    - cron: "55 22 * * *"
+    # JST 08:10 = UTC 23:10 (previous day). collect_today_entries.mjsは当日08時未満だと
+    # BOATCASTにまだ当日分の出走表が無いとみなして前日分にフォールバックするため、
+    # 07:55だとその境界より前に走ってしまい「本日出走」が前日のまま固定されていた。
+    # 08:10にして確実に境界を超えてから実行する。Avoid GitHub Actions congestion at :00.
+    - cron: "10 23 * * *"
 
 concurrency:
   group: wake-dictionary-production
