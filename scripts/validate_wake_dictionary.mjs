@@ -393,12 +393,14 @@ try {
       const c = breakdownByCourse.get(Number(course.course));
       if (!c || Number(c.win_n) !== winN) {
         badRawDisplayData++;
+        console.log(`[6] DEBUG bad cell file=${file} course=${courseNo} course_stats.win_n=${winN} breakdown.win_n=${c?Number(c.win_n):"MISSING"}`);
         continue;
       }
 
       const countSum = (c.items || []).reduce((s,x) => s + Number(x.count || 0), 0);
       if (countSum !== winN) {
         badRawDisplayData++;
+        console.log(`[6] DEBUG bad cell file=${file} course=${courseNo} win_n=${winN} countSum=${countSum} items=${JSON.stringify(c.items)}`);
         continue;
       }
 
@@ -407,6 +409,7 @@ try {
         const actual = Number(x.raw_rate);
         if (!approx(actual, expected, 1e-12)) {
           badRawDisplayData++;
+          console.log(`[6] DEBUG bad cell file=${file} course=${courseNo} win_n=${winN} item=${JSON.stringify(x)} expected=${expected} actual=${actual}`);
           break;
         }
       }
