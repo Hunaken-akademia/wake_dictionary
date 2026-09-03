@@ -204,7 +204,10 @@ console.log(`force_full=${FORCE_FULL}`);
 const metadataRows = await fetchRetry("rpc/wake_dictionary_metadata_v1_fn");
 const racers = await fetchRetry("wake_dictionary_racers_v1",{order:"regno.asc"});
 const cacheMeta = await fetchRetry("wake_dictionary_incremental_cache_v1",{
-  select:"regno,data_end,period_start_24m,defense_start_1y",
+  // course_rows is intentionally included: a late historical insert can keep data_end
+  // unchanged and may also predate the recent-correction window. Comparing its n sum
+  // with racers.total_starts gives us a cheap, deterministic stale-cache detector.
+  select:"regno,course_rows,data_end,period_start_24m,defense_start_1y",
   order:"regno.asc"
 });
 let venueCourseCacheMeta;
@@ -242,6 +245,29 @@ let mode="DELTA";
 for(const r of currentRegnos) {
   if(!cachedSet.has(r) || !venueCourseCachedSet.has(r)) affected.add(r);
 }
+
+// Detect cache drift even when a row was inserted/corrected outside the normal
+// date/created_at delta windows. This prevents a stale per-racer cache from
+// disagreeing with the live 24-month racer totals and blocking deployment.
+const totalStartsByRegno = new Map(
+  racers.map((r) => [Number(r.regno), Number(r.total_starts || 0)])
+);
+const staleTotalRegnos = [];
+for (const row of cacheMeta) {
+  const regno = Number(row.regno);
+  if (!currentSet.has(regno)) continue;
+  const cachedStarts = (Array.isArray(row.course_rows) ? row.course_rows : [])
+    .reduce((sum, x) => sum + Number(x?.n || 0), 0);
+  const liveStarts = totalStartsByRegno.get(regno);
+  if (Number.isFinite(liveStarts) && cachedStarts !== liveStarts) {
+    affected.add(regno);
+    staleTotalRegnos.push(regno);
+  }
+}
+console.log(
+  `cache_total_mismatch_racers=${staleTotalRegnos.length}` +
+  (staleTotalRegnos.length ? ` sample=${staleTotalRegnos.slice(0,10).join(",")}` : "")
+);
 
 if(FORCE_FULL || !state?.last_data_end || !state?.period_start_24m || !state?.defense_start_1y){
   mode=FORCE_FULL?"FORCED_FULL":"FULL_SEED";
