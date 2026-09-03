@@ -379,19 +379,26 @@ try {
     }
 
     // v2.2: 1着が1回でもあるコースは、実測ドーナツを作れる完全な内訳が必要。
+    // win_kimarite_breakdownはSQL側で実コース1〜6・決まり手6種限定に定義されている。
+    // 決まり手6種のどれにも当たらない勝ち(転覆・失格等でwinner_kimariteがnull、
+    // または6種外の値)が稀に存在し、その場合は内訳合計(countSum)がwin_nを
+    // 下回るのが正常(v2.3で確認: regno=4966 course=1でwin_n=26 countSum=25)。
+    // そのため合計の完全一致(===)ではなく上限(<=)だけを要求する。
     for (const course of d.course_stats || []) {
+      const courseNo = Number(course.course);
+      if (!(courseNo >= 1 && courseNo <= 6)) continue;
       const winN = Number(course.finish_counts?.win || 0);
       if (winN < 1) continue;
       rawWinCellsChecked++;
 
-      const c = breakdownByCourse.get(Number(course.course));
+      const c = breakdownByCourse.get(courseNo);
       if (!c || Number(c.win_n) !== winN) {
         badRawDisplayData++;
         continue;
       }
 
       const countSum = (c.items || []).reduce((s,x) => s + Number(x.count || 0), 0);
-      if (countSum !== winN) {
+      if (countSum > winN) {
         badRawDisplayData++;
         continue;
       }

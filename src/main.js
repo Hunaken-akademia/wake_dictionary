@@ -2415,8 +2415,13 @@ function kimariteDonuts(rows, courseStats) {
   );
 
   // ユーザー要望: そのコースを1走でもしていればカード自体は表示。
+  // course_statsには元データ不整合由来の実コース外(1〜6以外)の値が
+  // 紛れることがあり、その場合は決まり手内訳を持たないため除外する。
   const courses = [...(courseStats || [])]
-    .filter((c) => Number(c.n || 0) >= 1)
+    .filter((c) => {
+      const course = Number(c.course);
+      return course >= 1 && course <= 6 && Number(c.n || 0) >= 1;
+    })
     .sort((a,b) => Number(a.course) - Number(b.course));
 
   if (!courses.length) return `<div class="empty">決まり手データなし</div>`;
