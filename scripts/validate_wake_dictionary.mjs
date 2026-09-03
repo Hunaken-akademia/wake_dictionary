@@ -379,10 +379,11 @@ try {
     }
 
     // v2.2: 1着が1回でもあるコースは、実測ドーナツを作れる完全な内訳が必要。
-    // ただしwin_kimarite_breakdownはSQL側で実コース1〜6限定に定義されているため、
-    // 元データ不整合由来のコース値(1〜6以外)がcourse_statsに紛れても対象外とする。
-    // total_starts整合(チェック[1])は全コース込みのまま維持し、ここだけ実コース
-    // ドメインへ揃えることで、1件の恒久的なデータ異常でビルド全体を止めない。
+    // win_kimarite_breakdownはSQL側で実コース1〜6・決まり手6種限定に定義されている。
+    // 決まり手6種のどれにも当たらない勝ち(転覆・失格等でwinner_kimariteがnull、
+    // または6種外の値)が稀に存在し、その場合は内訳合計(countSum)がwin_nを
+    // 下回るのが正常(v2.3で確認: regno=4966 course=1でwin_n=26 countSum=25)。
+    // そのため合計の完全一致(===)ではなく上限(<=)だけを要求する。
     for (const course of d.course_stats || []) {
       const courseNo = Number(course.course);
       if (!(courseNo >= 1 && courseNo <= 6)) continue;
@@ -390,17 +391,15 @@ try {
       if (winN < 1) continue;
       rawWinCellsChecked++;
 
-      const c = breakdownByCourse.get(Number(course.course));
+      const c = breakdownByCourse.get(courseNo);
       if (!c || Number(c.win_n) !== winN) {
         badRawDisplayData++;
-        console.log(`[6] DEBUG bad cell file=${file} course=${courseNo} course_stats.win_n=${winN} breakdown.win_n=${c?Number(c.win_n):"MISSING"}`);
         continue;
       }
 
       const countSum = (c.items || []).reduce((s,x) => s + Number(x.count || 0), 0);
-      if (countSum !== winN) {
+      if (countSum > winN) {
         badRawDisplayData++;
-        console.log(`[6] DEBUG bad cell file=${file} course=${courseNo} win_n=${winN} countSum=${countSum} items=${JSON.stringify(c.items)}`);
         continue;
       }
 
@@ -409,7 +408,6 @@ try {
         const actual = Number(x.raw_rate);
         if (!approx(actual, expected, 1e-12)) {
           badRawDisplayData++;
-          console.log(`[6] DEBUG bad cell file=${file} course=${courseNo} win_n=${winN} item=${JSON.stringify(x)} expected=${expected} actual=${actual}`);
           break;
         }
       }
