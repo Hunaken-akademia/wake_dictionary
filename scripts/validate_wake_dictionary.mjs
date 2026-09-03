@@ -379,7 +379,13 @@ try {
     }
 
     // v2.2: 1着が1回でもあるコースは、実測ドーナツを作れる完全な内訳が必要。
+    // ただしwin_kimarite_breakdownはSQL側で実コース1〜6限定に定義されているため、
+    // 元データ不整合由来のコース値(1〜6以外)がcourse_statsに紛れても対象外とする。
+    // total_starts整合(チェック[1])は全コース込みのまま維持し、ここだけ実コース
+    // ドメインへ揃えることで、1件の恒久的なデータ異常でビルド全体を止めない。
     for (const course of d.course_stats || []) {
+      const courseNo = Number(course.course);
+      if (!(courseNo >= 1 && courseNo <= 6)) continue;
       const winN = Number(course.finish_counts?.win || 0);
       if (winN < 1) continue;
       rawWinCellsChecked++;
