@@ -131,9 +131,25 @@ jobs:
           echo "===== validation ====="
           cat /tmp/validate.log
 
-          if [ "$TODAY_STATUS" -ne 0 ] || [ "$VALIDATE_STATUS" -ne 0 ]; then
-            echo "Pre-deploy checks failed. Production remains on the previous successful deployment."
+          if [ "$TODAY_STATUS" -ne 0 ]; then
+            echo "Today entries collection failed. Production remains on the previous successful deployment."
             exit 1
+          fi
+
+          if [ "$VALIDATE_STATUS" -ne 0 ]; then
+            echo "Validation detected a transient aggregate/cache mismatch; refreshing recent affected racers once."
+            WAKE_RACER_BATCH_SIZE=50 \
+            WAKE_VENUE_BATCH_SIZE=50 \
+            WAKE_KIMARITE_BATCH_SIZE=10 \
+            WAKE_DEFENSE_BATCH_SIZE=20 \
+            WAKE_VENUE_COURSE_BATCH_SIZE=25 \
+            WAKE_RECENT_CORRECTION_RECHECK_DAYS=3 \
+              node scripts/refresh_incremental_cache.mjs
+
+            node scripts/export_wake_dictionary.mjs
+            node scripts/export_historical_race_classes.mjs
+            node scripts/collect_today_entries.mjs
+            node scripts/validate_wake_dictionary.mjs
           fi
 
       - name: Confirm generated data exists
